@@ -10,13 +10,19 @@ import java.util.List;
 public class ScanAllSimNumbers {
 
     public static void main(String[] args) {
-        List<String> simNumbers = getAllSimNumbers();
-        System.out.println("📋 Danh sách số điện thoại tìm được:");
-        simNumbers.forEach(System.out::println);
+        ScanResult result = getAllSimNumbers();
+
+        System.out.println("\n📋 Danh sách số điện thoại tìm được:");
+        result.successNumbers.forEach(System.out::println);
+
+        System.out.println("\n✅ Thành công: " + result.successCount);
+        System.out.println("❌ Thất bại: " + result.errorCount);
     }
 
-    public static List<String> getAllSimNumbers() {
+    public static ScanResult getAllSimNumbers() {
         List<String> numbers = new ArrayList<>();
+        int success = 0;
+        int fail = 0;
 
         SerialPort[] ports = SerialPort.getCommPorts();
         System.out.println("🔍 Đang quét " + ports.length + " cổng COM...");
@@ -29,23 +35,29 @@ public class ScanAllSimNumbers {
 
             if (port.openPort()) {
                 try {
-                    // Gửi lệnh AT+CNUM
                     String response = sendAtCommand(port, "AT+CNUM");
                     String phoneNumber = parsePhoneNumber(response);
+
                     if (!phoneNumber.equals("Unknown")) {
                         numbers.add(port.getSystemPortName() + ": " + phoneNumber);
+                        success++;
+                    } else {
+                        System.err.println("⚠ Không lấy được số từ " + port.getSystemPortName());
+                        fail++;
                     }
                 } catch (Exception e) {
                     System.err.println("❌ Lỗi tại " + port.getSystemPortName() + ": " + e.getMessage());
+                    fail++;
                 } finally {
                     port.closePort();
                 }
             } else {
                 System.err.println("❌ Không mở được " + port.getSystemPortName());
+                fail++;
             }
         }
 
-        return numbers;
+        return new ScanResult(numbers, success, fail);
     }
 
     private static String sendAtCommand(SerialPort port, String command) throws IOException, InterruptedException {
@@ -63,7 +75,6 @@ public class ScanAllSimNumbers {
     }
 
     private static String parsePhoneNumber(String response) {
-        // Ví dụ response: +CNUM: "My Number","+84901234567",145,7,4
         for (String line : response.split("\n")) {
             if (line.contains("+CNUM")) {
                 String[] parts = line.split(",");
@@ -73,5 +84,18 @@ public class ScanAllSimNumbers {
             }
         }
         return "Unknown";
+    }
+
+    // ---- DTO kết quả ----
+    static class ScanResult {
+        List<String> successNumbers;
+        int successCount;
+        int errorCount;
+
+        public ScanResult(List<String> successNumbers, int successCount, int errorCount) {
+            this.successNumbers = successNumbers;
+            this.successCount = successCount;
+            this.errorCount = errorCount;
+        }
     }
 }

@@ -94,9 +94,6 @@ public class GsmSerialHelper {
         }
     }
 
-    /**
-     * Lắng nghe dữ liệu từ COM port
-     */
     public static void listenCom(String portName, int baudRate) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(baudRate);
@@ -132,7 +129,7 @@ public class GsmSerialHelper {
         int baud = 9600;
 
         // Test AT
-        System.out.println(sendAtCommand(port, baud, "AT\r\n", 2));
+//        System.out.println(sendAtCommand(port, baud, "AT\r\n", 2));
 
         // Test SMS
         // System.out.println(sendSms(port, baud, "+84901234567", "Hello Java GSM!"));
