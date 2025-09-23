@@ -4,7 +4,7 @@ services:
     environment:
       vps-id: 72.60.41.168
       device: my-gsm-node-01
-      scan-interval-ms: 900000
+      scan-interval-ms: 60000
 
     devices:
       - "/dev/ttyUSB0:/dev/ttyUSB0"
