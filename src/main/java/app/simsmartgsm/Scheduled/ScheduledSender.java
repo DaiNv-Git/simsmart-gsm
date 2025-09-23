@@ -44,7 +44,7 @@ public class ScheduledSender {
      *
      * Default: 60000 ms (1 minute)
      */
-    @Scheduled(fixedRateString = "${services.sim-smart-gsm.environment.scan-interval-ms:60000}")
+    @Scheduled(fixedRateString = "${services.sim-smart-gsm.environment.scan-interval-ms:600000}")
     public void runPeriodicScan() {
         String now = TF.format(Instant.now());
         String deviceName = HostUtils.getDeviceName();
