@@ -20,7 +20,7 @@ public class SimRequest {
     @AllArgsConstructor
     @NoArgsConstructor
     public static class PortInfo {
-        @JsonProperty("port_name")
+        @JsonProperty("com_name")
         private String portName;
         private boolean success;
         @JsonProperty("sim_provider")
