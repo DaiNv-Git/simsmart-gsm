@@ -1,6 +1,7 @@
 package app.simsmartgsm.service;
 
 import app.simsmartgsm.dto.request.SimRequest;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClientException;
@@ -11,16 +12,29 @@ public class SimService {
 
     private final RestTemplate restTemplate;
 
+    @Value("${api.key:}")
+    private String apiKey;
+
     public SimService(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
 
+    /**
+     * Gửi danh sách SIM (port_data) sang VPS server
+     *
+     * @param vpsId   địa chỉ VPS hoặc IP
+     * @param payload SimRequest (deviceName + portData)
+     * @return chuỗi kết quả
+     */
     public String sendSimList(String vpsId, SimRequest payload) {
         String url = String.format("http://%s:9090/api/simlist", vpsId);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.set("X-Api-Key", System.getenv("API_KEY"));
+
+        if (apiKey != null && !apiKey.isBlank()) {
+            headers.set("X-Api-Key", apiKey);
+        }
 
         HttpEntity<SimRequest> request = new HttpEntity<>(payload, headers);
 
@@ -29,9 +43,9 @@ public class SimService {
                     restTemplate.exchange(url, HttpMethod.POST, request, String.class);
 
             if (response.getStatusCode().is2xxSuccessful()) {
-                return "Gửi dữ liệu thành công: " + response.getBody();
+                return "✅ Gửi dữ liệu thành công: " + response.getBody();
             } else {
-                return "Lỗi khi gửi dữ liệu, status=" + response.getStatusCode()
+                return "⚠ Lỗi khi gửi dữ liệu, status=" + response.getStatusCode()
                         + " body=" + response.getBody();
             }
 
@@ -40,3 +54,4 @@ public class SimService {
         }
     }
 }
+

@@ -1,1 +1,13 @@
-spring.application.name=simsmart-gsm
+version: '3.8'
+services:
+  sim-smart-gsm:
+    image: your-image:latest
+    environment:
+      - DEVICE= my-gsm-node-01
+      - VPS_ID=192.168.88.100
+      - API_KEY=${API_KEY}
+      - SCAN_INTERVAL_MS=900000
+    devices:
+      - "/dev/ttyUSB0:/dev/ttyUSB0"
+    restart: always
+

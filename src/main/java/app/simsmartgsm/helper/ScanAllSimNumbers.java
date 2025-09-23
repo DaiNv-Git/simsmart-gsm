@@ -86,7 +86,6 @@ public class ScanAllSimNumbers {
         return "Unknown";
     }
 
-    // ---- DTO kết quả ----
     static class ScanResult {
         List<String> successNumbers;
         int successCount;
