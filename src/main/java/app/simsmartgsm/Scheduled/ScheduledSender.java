@@ -65,6 +65,7 @@ public class ScheduledSender {
 
         try {
             String result = simService.sendSimList(vpsId, payload);
+            System.out.println("payload"+payload);
             log.info("[{}] sendSimList result: {}", now, result);
         } catch (Exception e) {
             log.error("[{}] Error sending sim list to vpsId='{}': {}", now, vpsId, e.getMessage(), e);
