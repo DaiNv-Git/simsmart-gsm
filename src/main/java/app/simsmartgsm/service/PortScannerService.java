@@ -22,26 +22,36 @@ public class PortScannerService {
             port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 1000, 1000);
 
             if (!port.openPort()) {
-                results.add(new PortInfo(portName, false, null, "Cannot open port"));
+                results.add(new PortInfo(portName, false, null, null, null, "Cannot open port"));
                 continue;
             }
 
             try {
-
+                // Kiểm tra kết nối modem
                 sendAtCommand(port, "AT");
-
                 sendAtCommand(port, "AT+CSCS=\"GSM\"");
 
-                String resp = sendAtCommand(port, "AT+CNUM");
+                // Lấy số điện thoại
+                String respNum = sendAtCommand(port, "AT+CNUM");
+                String phone = parsePhoneNumberFromCnum(respNum);
 
-                String phone = parsePhoneNumberFromCnum(resp);
-                if (phone != null) {
-                    results.add(new PortInfo(portName, true, phone, "OK"));
+                // Lấy CCID
+                String respCcid = sendAtCommand(port, "AT+CCID");
+                String ccid = parseCcid(respCcid);
+
+                // Lấy IMSI để xác định nhà mạng
+                String respImsi = sendAtCommand(port, "AT+CIMI");
+                String imsi = parseImsi(respImsi);
+                String provider = detectProvider(imsi);
+
+                if (phone != null || ccid != null) {
+                    results.add(new PortInfo(portName, true, provider, phone, ccid, "OK"));
                 } else {
-                    results.add(new PortInfo(portName, false, null, "No number in CNUM response"));
+                    results.add(new PortInfo(portName, false, null, null, null, "No data from SIM"));
                 }
+
             } catch (Exception e) {
-                results.add(new PortInfo(portName, false, null, "Error: " + e.getMessage()));
+                results.add(new PortInfo(portName, false, null, null, null, "Error: " + e.getMessage()));
             } finally {
                 port.closePort();
             }
@@ -67,11 +77,8 @@ public class PortScannerService {
 
     private String parsePhoneNumberFromCnum(String response) {
         if (response == null) return null;
-        // Tìm dòng chứa +CNUM: "Name","<phone>",...
-        String[] lines = response.split("\\r?\\n");
-        for (String line : lines) {
+        for (String line : response.split("\\r?\\n")) {
             if (line.contains("+CNUM")) {
-                // tách theo dấu phẩy, lấy phần thứ 2
                 String[] parts = line.split(",");
                 if (parts.length >= 2) {
                     return parts[1].replace("\"", "").trim();
@@ -79,5 +86,36 @@ public class PortScannerService {
             }
         }
         return null;
+    }
+
+    private String parseCcid(String response) {
+        if (response == null) return null;
+        for (String line : response.split("\\r?\\n")) {
+            if (line.matches("\\d{18,20}") || line.contains("+CCID")) {
+                return line.replace("+CCID: ", "").trim();
+            }
+        }
+        return null;
+    }
+
+    private String parseImsi(String response) {
+        if (response == null) return null;
+        for (String line : response.split("\\r?\\n")) {
+            if (line.matches("\\d{14,16}")) {
+                return line.trim();
+            }
+        }
+        return null;
+    }
+
+    private String detectProvider(String imsi) {
+        if (imsi == null) return null;
+        if (imsi.startsWith("44010")) return "NTT Docomo (JP)";
+        if (imsi.startsWith("44020")) return "SoftBank (JP)";
+        if (imsi.startsWith("44050")) return "KDDI au (JP)";
+        if (imsi.startsWith("45201")) return "Mobifone (VN)";
+        if (imsi.startsWith("45202")) return "Vinaphone (VN)";
+        if (imsi.startsWith("45204")) return "Viettel (VN)";
+        return "Unknown";
     }
 }
