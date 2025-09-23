@@ -21,7 +21,7 @@ public class SimWebSocketController {
 
     @PostMapping("/start")
     public String startScan() {
-        List<SimRequest.PortSimple> portData = scanner.scanAllPorts();
+        List<SimRequest.PortInfo> portData = scanner.scanAllPorts();
 
         messagingTemplate.convertAndSend("/topic/simlist", portData);
 

@@ -1,4 +1,4 @@
-package app.simsmartgsm.util;
+package app.simsmartgsm.uitils;
 
 import com.fazecast.jSerialComm.SerialPort;
 
@@ -8,7 +8,10 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Lightweight helper: send AT command and read multi-read until timeout or "OK"/"ERROR".
+ * Helper để gửi AT command và đọc response ổn định.
+ * - flush input trước khi gửi
+ * - đọc liên tục trong vòng timeout tổng
+ * - hỗ trợ retry
  */
 public class AtCommandHelper {
 
@@ -23,39 +26,64 @@ public class AtCommandHelper {
     }
 
     /**
-     * Send command and wait for response. Returns full response (may include OK/ERROR).
-     * totalTimeoutMs: total waiting time in ms.
+     * Gửi 1 lệnh AT và đọc response.
+     *
+     * @param command       ví dụ "AT" hoặc "AT+CNUM"
+     * @param totalTimeoutMs tổng thời gian chờ để thu thập response (ms)
+     * @param retry         số lần retry nếu response rỗng
      */
-    public String sendCommand(String command, int totalTimeoutMs) throws IOException, InterruptedException {
-        if (!port.isOpen()) throw new IOException("Port not open: " + port.getSystemPortName());
+    public String sendCommand(String command, int totalTimeoutMs, int retry) throws IOException, InterruptedException {
+        if (!port.isOpen()) {
+            throw new IOException("Port is not open: " + port.getSystemPortName());
+        }
 
+        // bỏ dữ liệu cũ trong buffer
         flushInput();
 
-        String at = command + "\r";
-        out.write(at.getBytes(StandardCharsets.UTF_8));
-        out.flush();
+        for (int attempt = 0; attempt < Math.max(1, retry); attempt++) {
+            // Gửi lệnh
+            String at = command + "\r";
+            out.write(at.getBytes(StandardCharsets.UTF_8));
+            out.flush();
 
-        StringBuilder sb = new StringBuilder();
-        long start = System.currentTimeMillis();
-        byte[] buffer = new byte[1024];
+            // nhỏ delay để modem bắt đầu trả
+            Thread.sleep(200);
 
-        while (System.currentTimeMillis() - start < totalTimeoutMs) {
-            int available = in.available();
-            if (available > 0) {
-                int len = in.read(buffer, 0, Math.min(buffer.length, available));
-                if (len > 0) {
-                    sb.append(new String(buffer, 0, len, StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            long start = System.currentTimeMillis();
+            byte[] buffer = new byte[1024];
+
+            // đọc liên tục cho đến khi hết hoặc timeout
+            while (System.currentTimeMillis() - start < totalTimeoutMs) {
+                int available = in.available();
+                if (available > 0) {
+                    int len = in.read(buffer, 0, Math.min(buffer.length, available));
+                    if (len > 0) {
+                        sb.append(new String(buffer, 0, len, StandardCharsets.UTF_8));
+                    }
+                    // nếu thấy OK hoặc ERROR, có thể break sớm (nhiều modem trả "OK")
                     String s = sb.toString();
-                    // break early if OK or ERROR appears
                     if (s.contains("\r\nOK\r\n") || s.contains("\nOK\n") || s.contains("\r\nERROR\r\n") || s.contains("\nERROR\n")) {
                         break;
                     }
+                } else {
+                    // không có dữ liệu, chờ 100ms
+                    Thread.sleep(100);
                 }
+            }
+
+            String response = sb.toString().trim();
+            if (!response.isEmpty()) {
+                return response;
             } else {
-                Thread.sleep(100);
+                // nếu rỗng và còn retry, đợi chút và retry
+                if (attempt < retry - 1) {
+                    Thread.sleep(200);
+                }
             }
         }
-        return sb.toString().trim();
+
+        return ""; // rỗng nếu không có response
     }
 
     private void flushInput() {
