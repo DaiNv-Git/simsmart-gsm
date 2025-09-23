@@ -3,8 +3,7 @@ services:
   sim-smart-gsm:
     image: your-image:latest
     environment:
-      - DEVICE= my-gsm-node-01
-      - VPS_ID=192.168.88.100
+      - VPS_ID=72.60.41.168
       - API_KEY=${API_KEY}
       - SCAN_INTERVAL_MS=900000
     devices:
