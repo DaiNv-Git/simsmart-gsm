@@ -1,11 +1,11 @@
 version: '3.8'
 services:
   sim-smart-gsm:
-    image: your-image:latest
     environment:
-      - VPS_ID=72.60.41.168
-      - API_KEY=${API_KEY}
-      - SCAN_INTERVAL_MS=900000
+      vps-id: 72.60.41.168
+      device: my-gsm-node-01
+      scan-interval-ms: 900000
+
     devices:
       - "/dev/ttyUSB0:/dev/ttyUSB0"
     restart: always
