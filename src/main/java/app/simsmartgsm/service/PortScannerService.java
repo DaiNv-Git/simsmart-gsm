@@ -21,8 +21,8 @@ public class PortScannerService {
 
     // ----- TUNABLE PARAMETERS -----
     private static final int THREAD_POOL_SIZE = Math.max(2, Runtime.getRuntime().availableProcessors()); // parallel workers
-    private static final int PER_PORT_TOTAL_TIMEOUT_MS = 4_000; // tổng thời gian (ms) cho 1 port -> giảm để finish nhanh
-    private static final int CMD_TIMEOUT_SHORT_MS = 500;  // timeout cho các lệnh nhanh (AT, CSCS)
+    private static final int PER_PORT_TOTAL_TIMEOUT_MS = 6_000; // tổng thời gian (ms) cho 1 port -> giảm để finish nhanh
+    private static final int CMD_TIMEOUT_SHORT_MS = 700;  // timeout cho các lệnh nhanh (AT, CSCS)
     private static final int CMD_TIMEOUT_MED_MS = 1200;   // timeout cho lệnh có thể lâu (CCID/CIMI/CNUM)
     private static final int CMD_RETRY = 1;               // retry tối đa (0 = no retry)
     private static final int BAUD_RATE = 115200;
