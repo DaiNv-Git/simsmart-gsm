@@ -1,4 +1,4 @@
-package app.simsmartgsm.service;
+package app.simsmartgsm.dto.request;
 
 public class CollectorRequestEvent {
     private final String ccid;
