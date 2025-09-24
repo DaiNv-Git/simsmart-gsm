@@ -1,6 +1,7 @@
 package app.simsmartgsm.controller;
 import app.simsmartgsm.dto.request.SimRequest;
 import app.simsmartgsm.service.PortScannerService;
+import org.springframework.http.ResponseEntity;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.web.bind.annotation.*;
 
@@ -20,13 +21,15 @@ public class SimWebSocketController {
 
 
     @PostMapping("/start")
-    public String startScan() {
+    public ResponseEntity<String> startScan() {
         List<SimRequest.PortInfo> portData = scanner.scanAllPorts();
         System.out.println("startt scan");
-        System.out.println("startt scan size"+portData.size());
+        System.out.println("startt scan size " + portData.size());
+
         messagingTemplate.convertAndSend("/topic/simlist", portData);
 
-        return "✅ Scan started, result pushed to /topic/simlist";
+        return ResponseEntity.ok("✅ Scan started, result pushed to /topic/simlist");
     }
+
 }
 
