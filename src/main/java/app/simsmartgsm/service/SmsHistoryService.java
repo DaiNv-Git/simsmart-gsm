@@ -134,16 +134,13 @@ public class SmsHistoryService {
             exec.shutdown();
         }
 
-        // sắp xếp theo ReceivedTime DESC (mới nhất lên đầu)
+
         all.sort((m1, m2) -> {
-            try {
-                LocalDateTime d1 = LocalDateTime.parse(m1.getOrDefault("ReceivedTime", ""), TS_FORMAT);
-                LocalDateTime d2 = LocalDateTime.parse(m2.getOrDefault("ReceivedTime", ""), TS_FORMAT);
-                return d2.compareTo(d1);
-            } catch (Exception e) {
-                return 0;
-            }
+            String ts1 = m1.getOrDefault("ReceivedTime", "");
+            String ts2 = m2.getOrDefault("ReceivedTime", "");
+            return ts2.compareTo(ts1); // đảo ngược để newest lên đầu
         });
+
 
         int start = page * size;
         int end = Math.min(start + size, all.size());
