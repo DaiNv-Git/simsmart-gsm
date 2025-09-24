@@ -1,12 +1,19 @@
-version: '3.8'
+spring:
+  data:
+    mongodb:
+      uri: mongodb+srv://DevWork:DevWork@devwork.9mshdom.mongodb.net/JapanSim?retryWrites=true&w=majority&appName=JapanSim
+
 services:
   sim-smart-gsm:
+    image: sim-smart-gsm:latest   # hoặc build context nếu bạn build local
+    container_name: sim-smart-gsm
     environment:
-      vps-id: 72.60.41.168
-      device: my-gsm-node-01
-      scan-interval-ms: 60000
-
+      VPS_ID: 72.60.41.168
+      DEVICE: my-gsm-node-01
+      SCAN_INTERVAL_MS: 60000
+      SPRING_DATA_MONGODB_URI: mongodb+srv://DevWork:DevWork@devwork.9mshdom.mongodb.net/JapanSim?retryWrites=true&w=majority&appName=JapanSim
     devices:
       - "/dev/ttyUSB0:/dev/ttyUSB0"
     restart: always
-
+    ports:
+      - "8080:8080"

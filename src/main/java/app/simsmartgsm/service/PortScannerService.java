@@ -25,7 +25,7 @@ public class PortScannerService {
     }
 
     @Scheduled(fixedRate = 200_000)
-    public void periodicScan() throws IOException {
+    public void periodicScan() {
         SerialPort[] ports = SerialPort.getCommPorts();
         for (SerialPort port : ports) {
             String portName = port.getSystemPortName();
