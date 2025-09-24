@@ -31,7 +31,7 @@ public class SmsService {
         Thread.sleep(200);
     }
 
-    /** Gửi SMS qua cổng chỉ định, trả về JSON string */
+    /** Gửi SMS qua cổng chỉ định */
     public String sendSms(String portName, String phoneNumber, String text) {
         SerialPort port = openPort(portName);
         StringBuilder modemResp = new StringBuilder();
@@ -78,7 +78,7 @@ public class SmsService {
                 "}";
     }
 
-    /** Đọc toàn bộ SMS từ SIM, parse thành JSON list */
+    /** Đọc tất cả SMS từ SIM */
     public String readSms(String portName) {
         SerialPort port = openPort(portName);
         List<Map<String, String>> messages = new ArrayList<>();
@@ -86,21 +86,22 @@ public class SmsService {
         try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
             Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII);
 
-            sendCmd(out, "AT+CMGF=1");        // text mode
-            sendCmd(out, "AT+CSCS=\"GSM\""); // charset
-            sendCmd(out, "AT+CMGL=\"ALL\""); // đọc tất cả SMS
+            // chuẩn bị môi trường đọc SMS
+            sendCmd(out, "AT+CMGF=1");          // text mode
+            sendCmd(out, "AT+CSCS=\"GSM\"");   // charset
+            sendCmd(out, "AT+CPMS=\"SM\"");    // chọn bộ nhớ SIM
+            sendCmd(out, "AT+CMGL=\"ALL\"");   // đọc tất cả SMS
 
             String header = null;
             long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < 5000 && scanner.hasNextLine()) {
+            while (System.currentTimeMillis() - start < 8000 && scanner.hasNextLine()) {
                 String line = scanner.nextLine().trim();
                 if (line.isEmpty()) continue;
 
                 if (line.startsWith("+CMGL:")) {
-                    // Bắt đầu 1 tin nhắn mới
-                    header = line;
+                    header = line; // header của SMS
                 } else if (header != null) {
-                    // Nội dung SMS nằm ngay sau header
+                    // line này là nội dung
                     Map<String, String> sms = parseSms(header, line);
                     messages.add(sms);
                     header = null;
@@ -112,7 +113,12 @@ public class SmsService {
             port.closePort();
         }
 
-        // Convert sang JSON thủ công (có thể dùng Jackson)
+        // nếu không có SMS thì trả về []
+        if (messages.isEmpty()) {
+            return "[]";
+        }
+
+        // Convert list sang JSON (có thể thay bằng Jackson/Gson nếu muốn)
         StringBuilder json = new StringBuilder("[\n");
         for (int i = 0; i < messages.size(); i++) {
             Map<String, String> sms = messages.get(i);
@@ -122,7 +128,7 @@ public class SmsService {
                         .append(entry.getValue().replace("\"", "\\\"")).append("\",\n");
             }
             if (json.charAt(json.length() - 2) == ',') {
-                json.delete(json.length() - 2, json.length() - 1); // bỏ dấu , cuối
+                json.delete(json.length() - 2, json.length() - 1);
             }
             json.append("  }");
             if (i < messages.size() - 1) json.append(",");
@@ -133,18 +139,22 @@ public class SmsService {
     }
 
     private Map<String, String> parseSms(String header, String content) {
-        // Ví dụ header: +CMGL: 1,"REC READ","+84901234567","","25/09/24,10:11:00+08"
         Map<String, String> sms = new LinkedHashMap<>();
         sms.put("header", header);
         sms.put("content", content);
 
         try {
+            // ví dụ header: +CMGL: 1,"REC READ","+84901234567","","25/09/24,10:11:00+08"
             String[] parts = header.split(",");
             if (parts.length >= 2) {
                 sms.put("status", parts[1].replace("\"", "").trim());
             }
             if (parts.length >= 3) {
                 sms.put("sender", parts[2].replace("\"", "").trim());
+            }
+            if (parts.length >= 5) {
+                sms.put("timestamp", parts[4].replace("\"", "").trim() + " " +
+                        parts[5].replace("\"", "").trim());
             }
         } catch (Exception ignore) {}
 
