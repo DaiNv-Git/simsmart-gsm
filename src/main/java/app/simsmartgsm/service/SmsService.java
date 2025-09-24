@@ -14,6 +14,7 @@ import java.util.*;
 public class SmsService {
     private static final Logger log = LoggerFactory.getLogger(SmsService.class);
 
+    // ====== Common helpers ======
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);
@@ -31,7 +32,7 @@ public class SmsService {
         Thread.sleep(200);
     }
 
-    /** Gửi SMS qua cổng chỉ định */
+    // ====== 1. Gửi SMS ======
     public String sendSms(String portName, String phoneNumber, String text) {
         SerialPort port = openPort(portName);
         StringBuilder modemResp = new StringBuilder();
@@ -78,8 +79,8 @@ public class SmsService {
                 "}";
     }
 
-    /** Đọc tất cả SMS từ SIM */
-    public String readSms(String portName) {
+    // ====== 2. Đọc tất cả SMS ======
+    public String readAllSms(String portName) {
         SerialPort port = openPort(portName);
         List<Map<String, String>> messages = new ArrayList<>();
 
@@ -113,31 +114,47 @@ public class SmsService {
             port.closePort();
         }
 
-        // nếu không có SMS thì trả về []
-        if (messages.isEmpty()) {
-            return "[]";
-        }
-
-        // Convert list sang JSON (có thể thay bằng Jackson/Gson nếu muốn)
-        StringBuilder json = new StringBuilder("[\n");
-        for (int i = 0; i < messages.size(); i++) {
-            Map<String, String> sms = messages.get(i);
-            json.append("  {\n");
-            for (Map.Entry<String, String> entry : sms.entrySet()) {
-                json.append("    \"").append(entry.getKey()).append("\": \"")
-                        .append(entry.getValue().replace("\"", "\\\"")).append("\",\n");
-            }
-            if (json.charAt(json.length() - 2) == ',') {
-                json.delete(json.length() - 2, json.length() - 1);
-            }
-            json.append("  }");
-            if (i < messages.size() - 1) json.append(",");
-            json.append("\n");
-        }
-        json.append("]");
-        return json.toString();
+        return toJson(messages);
     }
 
+    // ====== 3. Đọc SMS mới nhất ======
+    public String readLatestSms(String portName) {
+        SerialPort port = openPort(portName);
+        Map<String, String> latest = null;
+
+        try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
+            Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII);
+
+            sendCmd(out, "AT+CMGF=1");
+            sendCmd(out, "AT+CSCS=\"GSM\"");
+            sendCmd(out, "AT+CPMS=\"SM\"");
+            sendCmd(out, "AT+CMGL=\"ALL\"");
+
+            String header = null;
+            long start = System.currentTimeMillis();
+            while (System.currentTimeMillis() - start < 8000 && scanner.hasNextLine()) {
+                String line = scanner.nextLine().trim();
+                if (line.isEmpty()) continue;
+
+                if (line.startsWith("+CMGL:")) {
+                    header = line;
+                } else if (header != null) {
+                    Map<String, String> sms = parseSms(header, line);
+                    latest = sms; // luôn overwrite để lấy SMS cuối cùng
+                    header = null;
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Lỗi đọc SMS mới nhất qua " + portName, e);
+        } finally {
+            port.closePort();
+        }
+
+        if (latest == null) return "{}";
+        return toJson(Collections.singletonList(latest));
+    }
+
+    // ====== Helper parse & JSON ======
     private Map<String, String> parseSms(String header, String content) {
         Map<String, String> sms = new LinkedHashMap<>();
         sms.put("header", header);
@@ -159,5 +176,26 @@ public class SmsService {
         } catch (Exception ignore) {}
 
         return sms;
+    }
+
+    private String toJson(List<Map<String, String>> messages) {
+        if (messages.isEmpty()) return "[]";
+        StringBuilder json = new StringBuilder("[\n");
+        for (int i = 0; i < messages.size(); i++) {
+            Map<String, String> sms = messages.get(i);
+            json.append("  {\n");
+            for (Map.Entry<String, String> entry : sms.entrySet()) {
+                json.append("    \"").append(entry.getKey()).append("\": \"")
+                        .append(entry.getValue().replace("\"", "\\\"")).append("\",\n");
+            }
+            if (json.charAt(json.length() - 2) == ',') {
+                json.delete(json.length() - 2, json.length() - 1);
+            }
+            json.append("  }");
+            if (i < messages.size() - 1) json.append(",");
+            json.append("\n");
+        }
+        json.append("]");
+        return json.toString();
     }
 }
