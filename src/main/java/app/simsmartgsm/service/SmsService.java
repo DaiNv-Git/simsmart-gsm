@@ -11,96 +11,80 @@ import java.nio.charset.StandardCharsets;
 import java.util.Scanner;
 
 @Service
-public class GsmSimpleService {
-    private static final Logger log = LoggerFactory.getLogger(GsmSimpleService.class);
+public class SmsService {
+    private static final Logger log = LoggerFactory.getLogger(SmsService.class);
 
-    private static final String COM_PORT = "COM1"; // đổi sang /dev/ttyUSB0 nếu Linux
-    private static final int BAUD_RATE = 115200;
-
-    private SerialPort openPort() {
-        SerialPort port = SerialPort.getCommPort(COM_PORT);
-        port.setBaudRate(BAUD_RATE);
+    private SerialPort openPort(String portName) {
+        SerialPort port = SerialPort.getCommPort(portName);
+        port.setBaudRate(115200);
         port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
-
         if (!port.openPort()) {
-            throw new RuntimeException("Không thể mở cổng " + COM_PORT);
+            throw new RuntimeException("Không thể mở cổng " + portName);
         }
         return port;
     }
 
-    private void send(OutputStream out, String cmd) throws Exception {
+    private void sendCmd(OutputStream out, String cmd) throws Exception {
         log.info("➡️ {}", cmd);
         out.write((cmd + "\r").getBytes(StandardCharsets.US_ASCII));
         out.flush();
         Thread.sleep(300);
     }
 
-    /** Gửi SMS và trả kết quả modem trả về */
-    public String sendSms(String phoneNumber, String text) {
-        SerialPort port = openPort();
+    /** Gửi SMS qua cổng chỉ định */
+    public String sendSms(String portName, String phoneNumber, String text) {
+        SerialPort port = openPort(portName);
         StringBuilder result = new StringBuilder();
-
         try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
             Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII);
 
-            // Text mode
-            send(out, "AT+CMGF=1");
-
-            // Chuẩn bị gửi
-            send(out, "AT+CMGS=\"" + phoneNumber + "\"");
+            sendCmd(out, "AT+CMGF=1"); // text mode
+            sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
 
             Thread.sleep(500); // chờ modem trả '>'
-
-            // Gửi nội dung + Ctrl+Z
             out.write(text.getBytes(StandardCharsets.US_ASCII));
-            out.write(0x1A);
+            out.write(0x1A); // Ctrl+Z
             out.flush();
 
-            // Đọc phản hồi
             long start = System.currentTimeMillis();
             while (System.currentTimeMillis() - start < 5000 && scanner.hasNextLine()) {
                 String line = scanner.nextLine().trim();
                 if (!line.isEmpty()) {
-                    log.info("📩 {}", line);
                     result.append(line).append("\n");
                     if (line.contains("OK") || line.contains("ERROR")) break;
                 }
             }
         } catch (Exception e) {
-            throw new RuntimeException("Lỗi gửi SMS", e);
+            throw new RuntimeException("Lỗi gửi SMS qua " + portName, e);
         } finally {
             port.closePort();
         }
-
         return result.toString();
     }
 
-    /** Đọc toàn bộ tin nhắn trong SIM và trả về text */
-    public String readAllSms() {
-        SerialPort port = openPort();
+    /** Đọc toàn bộ SMS từ SIM */
+    public String readSms(String portName) {
+        SerialPort port = openPort(portName);
         StringBuilder result = new StringBuilder();
-
         try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
             Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII);
 
-            send(out, "AT+CMGF=1");        // text mode
-            send(out, "AT+CSCS=\"GSM\""); // charset chuẩn
-            send(out, "AT+CMGL=\"ALL\""); // đọc tất cả SMS
+            sendCmd(out, "AT+CMGF=1");        // text mode
+            sendCmd(out, "AT+CSCS=\"GSM\""); // charset
+            sendCmd(out, "AT+CMGL=\"ALL\""); // đọc inbox
 
             long start = System.currentTimeMillis();
             while (System.currentTimeMillis() - start < 5000 && scanner.hasNextLine()) {
                 String line = scanner.nextLine().trim();
                 if (!line.isEmpty()) {
-                    log.info("📩 {}", line);
                     result.append(line).append("\n");
                 }
             }
         } catch (Exception e) {
-            throw new RuntimeException("Lỗi đọc SMS", e);
+            throw new RuntimeException("Lỗi đọc SMS qua " + portName, e);
         } finally {
             port.closePort();
         }
-
         return result.toString();
     }
 }
