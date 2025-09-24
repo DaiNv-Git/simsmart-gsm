@@ -30,7 +30,7 @@ public class AtCommandHelper {
      *
      * @param command       ví dụ "AT" hoặc "AT+CNUM"
      * @param totalTimeoutMs tổng thời gian chờ để thu thập response (ms)
-     * @param retry         số lần retry nếu response rỗng
+     * @param retry         số lần retry thêm (0 = chỉ 1 lần)
      */
     public String sendCommand(String command, int totalTimeoutMs, int retry) throws IOException, InterruptedException {
         if (!port.isOpen()) {
@@ -40,57 +40,80 @@ public class AtCommandHelper {
         // bỏ dữ liệu cũ trong buffer
         flushInput();
 
-        for (int attempt = 0; attempt < Math.max(1, retry); attempt++) {
-            // Gửi lệnh
-            String at = command + "\r";
-            out.write(at.getBytes(StandardCharsets.UTF_8));
-            out.flush();
+        int maxAttempts = Math.max(1, retry + 1); // luôn gửi ít nhất 1 lần
+        IOException lastIo = null;
 
-            // nhỏ delay để modem bắt đầu trả
-            Thread.sleep(200);
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
+            try {
+                // Gửi lệnh
+                String at = command + "\r";
+                out.write(at.getBytes(StandardCharsets.ISO_8859_1)); // an toàn hơn UTF-8
+                out.flush();
 
-            StringBuilder sb = new StringBuilder();
-            long start = System.currentTimeMillis();
-            byte[] buffer = new byte[1024];
+                // nhỏ delay để modem bắt đầu trả
+                Thread.sleep(150);
 
-            // đọc liên tục cho đến khi hết hoặc timeout
-            while (System.currentTimeMillis() - start < totalTimeoutMs) {
-                int available = in.available();
-                if (available > 0) {
-                    int len = in.read(buffer, 0, Math.min(buffer.length, available));
-                    if (len > 0) {
-                        sb.append(new String(buffer, 0, len, StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                long start = System.currentTimeMillis();
+                byte[] buffer = new byte[1024];
+
+                // đọc liên tục cho đến khi hết hoặc timeout
+                while (System.currentTimeMillis() - start < totalTimeoutMs) {
+                    int available = in.available();
+                    if (available > 0) {
+                        int len = in.read(buffer, 0, Math.min(buffer.length, available));
+                        if (len > 0) {
+                            sb.append(new String(buffer, 0, len, StandardCharsets.ISO_8859_1));
+                        }
+                        String s = sb.toString();
+                        if (s.contains("OK") || s.contains("ERROR")) {
+                            break; // kết thúc sớm khi có phản hồi chuẩn
+                        }
+                    } else {
+                        Thread.sleep(50);
                     }
-                    // nếu thấy OK hoặc ERROR, có thể break sớm (nhiều modem trả "OK")
-                    String s = sb.toString();
-                    if (s.contains("\r\nOK\r\n") || s.contains("\nOK\n") || s.contains("\r\nERROR\r\n") || s.contains("\nERROR\n")) {
-                        break;
-                    }
-                } else {
-                    // không có dữ liệu, chờ 100ms
-                    Thread.sleep(100);
                 }
+
+                String response = sb.toString().trim();
+                if (!response.isEmpty()) {
+                    return response;
+                }
+
+            } catch (IOException ioe) {
+                lastIo = ioe;
             }
 
-            String response = sb.toString().trim();
-            if (!response.isEmpty()) {
-                return response;
-            } else {
-                // nếu rỗng và còn retry, đợi chút và retry
-                if (attempt < retry - 1) {
-                    Thread.sleep(200);
-                }
+            // nếu rỗng và còn retry, đợi chút và thử lại
+            if (attempt < maxAttempts - 1) {
+                Thread.sleep(200);
             }
         }
 
+        if (lastIo != null) throw lastIo;
         return ""; // rỗng nếu không có response
+    }
+
+    /**
+     * Gửi dữ liệu thô (dùng cho SMS + Ctrl+Z)
+     */
+    public void sendRaw(String raw, int totalTimeoutMs) throws IOException {
+        if (!port.isOpen()) {
+            throw new IOException("Port is not open: " + port.getSystemPortName());
+        }
+        out.write(raw.getBytes(StandardCharsets.ISO_8859_1));
+        out.flush();
     }
 
     private void flushInput() {
         try {
             while (in.available() > 0) {
-                in.read(); // discard
+                in.read(new byte[in.available()]);
             }
         } catch (IOException ignored) {}
+    }
+
+    public void close() {
+        try { in.close(); } catch (Exception ignored) {}
+        try { out.close(); } catch (Exception ignored) {}
     }
 }
