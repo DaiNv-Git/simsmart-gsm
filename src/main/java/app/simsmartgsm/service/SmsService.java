@@ -14,14 +14,11 @@ import java.util.*;
 public class SmsService {
     private static final Logger log = LoggerFactory.getLogger(SmsService.class);
 
-    // ====== Common helpers ======
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);
         port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
-        if (!port.openPort()) {
-            throw new RuntimeException("Không thể mở cổng " + portName);
-        }
+        if (!port.openPort()) throw new RuntimeException("Không thể mở cổng " + portName);
         return port;
     }
 
@@ -32,103 +29,16 @@ public class SmsService {
         Thread.sleep(200);
     }
 
-    // ====== 1. Gửi SMS ======
-    public String sendSms(String portName, String phoneNumber, String text) {
-        SerialPort port = openPort(portName);
-        StringBuilder modemResp = new StringBuilder();
-        String status = "UNKNOWN";
-
-        try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
-            Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII);
-
-            sendCmd(out, "AT+CMGF=1"); // text mode
-            sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
-
-            Thread.sleep(500); // đợi modem trả '>'
-            out.write(text.getBytes(StandardCharsets.US_ASCII));
-            out.write(0x1A); // Ctrl+Z
-            out.flush();
-
-            long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < 5000 && scanner.hasNextLine()) {
-                String line = scanner.nextLine().trim();
-                if (!line.isEmpty()) {
-                    modemResp.append(line).append("\n");
-                    if (line.contains("OK")) {
-                        status = "OK";
-                        break;
-                    }
-                    if (line.contains("ERROR")) {
-                        status = "ERROR";
-                        break;
-                    }
-                }
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("Lỗi gửi SMS qua " + portName, e);
-        } finally {
-            port.closePort();
-        }
-
-        return "{\n" +
-                "  \"status\": \"" + status + "\",\n" +
-                "  \"port\": \"" + portName + "\",\n" +
-                "  \"phoneNumber\": \"" + phoneNumber + "\",\n" +
-                "  \"message\": \"" + text + "\",\n" +
-                "  \"modemResponse\": \"" + modemResp.toString().replace("\"", "\\\"").trim() + "\"\n" +
-                "}";
-    }
-
-    // ====== 2. Đọc tất cả SMS ======
-    public String readAllSms(String portName) {
-        SerialPort port = openPort(portName);
+    // === đọc tin nhắn theo status cho 1 port ===
+    private List<Map<String, String>> readByStatus(String portName, String status) {
         List<Map<String, String>> messages = new ArrayList<>();
-
-        try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
-            Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII);
-
-            // chuẩn bị môi trường đọc SMS
-            sendCmd(out, "AT+CMGF=1");          // text mode
-            sendCmd(out, "AT+CSCS=\"GSM\"");   // charset
-            sendCmd(out, "AT+CPMS=\"SM\"");    // chọn bộ nhớ SIM
-            sendCmd(out, "AT+CMGL=\"ALL\"");   // đọc tất cả SMS
-
-            String header = null;
-            long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < 8000 && scanner.hasNextLine()) {
-                String line = scanner.nextLine().trim();
-                if (line.isEmpty()) continue;
-
-                if (line.startsWith("+CMGL:")) {
-                    header = line; // header của SMS
-                } else if (header != null) {
-                    // line này là nội dung
-                    Map<String, String> sms = parseSms(header, line);
-                    messages.add(sms);
-                    header = null;
-                }
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("Lỗi đọc SMS qua " + portName, e);
-        } finally {
-            port.closePort();
-        }
-
-        return toJson(messages);
-    }
-
-    // ====== 3. Đọc SMS mới nhất ======
-    public String readLatestSms(String portName) {
         SerialPort port = openPort(portName);
-        Map<String, String> latest = null;
 
-        try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
-            Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII);
-
-            sendCmd(out, "AT+CMGF=1");
-            sendCmd(out, "AT+CSCS=\"GSM\"");
-            sendCmd(out, "AT+CPMS=\"SM\"");
-            sendCmd(out, "AT+CMGL=\"ALL\"");
+        try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream(); Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
+            sendCmd(out, "AT+CMGF=1");        // text mode
+            sendCmd(out, "AT+CSCS=\"GSM\""); // charset
+            sendCmd(out, "AT+CPMS=\"MT\"");  // đọc cả SIM + modem
+            sendCmd(out, "AT+CMGL=\"" + status + "\"");
 
             String header = null;
             long start = System.currentTimeMillis();
@@ -139,63 +49,63 @@ public class SmsService {
                 if (line.startsWith("+CMGL:")) {
                     header = line;
                 } else if (header != null) {
-                    Map<String, String> sms = parseSms(header, line);
-                    latest = sms; // luôn overwrite để lấy SMS cuối cùng
+                    Map<String, String> sms = new LinkedHashMap<>();
+                    sms.put("port", portName);
+                    sms.put("header", header);
+                    sms.put("content", line);
+                    messages.add(sms);
                     header = null;
                 }
             }
         } catch (Exception e) {
-            throw new RuntimeException("Lỗi đọc SMS mới nhất qua " + portName, e);
+            log.error("❌ Lỗi đọc SMS {} từ {}: {}", status, portName, e.getMessage());
         } finally {
             port.closePort();
         }
-
-        if (latest == null) return "{}";
-        return toJson(Collections.singletonList(latest));
+        return messages;
     }
 
-    // ====== Helper parse & JSON ======
-    private Map<String, String> parseSms(String header, String content) {
-        Map<String, String> sms = new LinkedHashMap<>();
-        sms.put("header", header);
-        sms.put("content", content);
-
-        try {
-            // ví dụ header: +CMGL: 1,"REC READ","+84901234567","","25/09/24,10:11:00+08"
-            String[] parts = header.split(",");
-            if (parts.length >= 2) {
-                sms.put("status", parts[1].replace("\"", "").trim());
-            }
-            if (parts.length >= 3) {
-                sms.put("sender", parts[2].replace("\"", "").trim());
-            }
-            if (parts.length >= 5) {
-                sms.put("timestamp", parts[4].replace("\"", "").trim() + " " +
-                        parts[5].replace("\"", "").trim());
-            }
-        } catch (Exception ignore) {}
-
-        return sms;
+    // === API 1: đọc inbox (tin nhắn đến) của tất cả port ===
+    public String readInboxAll() {
+        return readAllPorts("REC UNREAD");
     }
 
-    private String toJson(List<Map<String, String>> messages) {
-        if (messages.isEmpty()) return "[]";
-        StringBuilder json = new StringBuilder("[\n");
-        for (int i = 0; i < messages.size(); i++) {
-            Map<String, String> sms = messages.get(i);
-            json.append("  {\n");
-            for (Map.Entry<String, String> entry : sms.entrySet()) {
-                json.append("    \"").append(entry.getKey()).append("\": \"")
-                        .append(entry.getValue().replace("\"", "\\\"")).append("\",\n");
-            }
-            if (json.charAt(json.length() - 2) == ',') {
-                json.delete(json.length() - 2, json.length() - 1);
-            }
-            json.append("  }");
-            if (i < messages.size() - 1) json.append(",");
-            json.append("\n");
+    // === API 2: đọc sent (tin nhắn gửi đi) của tất cả port ===
+    public String readSentAll() {
+        return readAllPorts("STO SENT");
+    }
+
+    // === API 3: đọc failed (tin nhắn gửi đi lỗi) của tất cả port ===
+    public String readFailedAll() {
+        return readAllPorts("STO UNSENT");
+    }
+
+    // helper: đọc tất cả port với 1 status
+    private String readAllPorts(String status) {
+        SerialPort[] ports = SerialPort.getCommPorts();
+        List<Map<String, String>> all = new ArrayList<>();
+        for (SerialPort sp : ports) {
+            all.addAll(readByStatus(sp.getSystemPortName(), status));
         }
-        json.append("]");
-        return json.toString();
+        return toJson(all);
+    }
+
+    private String toJson(List<Map<String, String>> list) {
+        if (list.isEmpty()) return "[]";
+        StringBuilder sb = new StringBuilder("[\n");
+        for (int i = 0; i < list.size(); i++) {
+            sb.append("  {");
+            int j = 0;
+            for (Map.Entry<String, String> e : list.get(i).entrySet()) {
+                if (j++ > 0) sb.append(", ");
+                sb.append("\"").append(e.getKey()).append("\": \"")
+                        .append(e.getValue().replace("\"", "\\\"")).append("\"");
+            }
+            sb.append("}");
+            if (i < list.size() - 1) sb.append(",");
+            sb.append("\n");
+        }
+        sb.append("]");
+        return sb.toString();
     }
 }
