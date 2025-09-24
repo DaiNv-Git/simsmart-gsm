@@ -60,9 +60,8 @@ public class SmsHistoryService {
              InputStream in = port.getInputStream();
              Scanner sc = new Scanner(in, StandardCharsets.US_ASCII)) {
 
-            sendCmd(out, "AT+CMGF=1");          // text mode
-            sendCmd(out, "AT+CSCS=\"GSM\"");   // charset
-            sendCmd(out, "AT+CNMI=2,1,0,0,0"); // lưu SMS vào bộ nhớ
+            sendCmd(out, "AT+CMGF=1");
+            sendCmd(out, "AT+CSCS=\"GSM\"");
             sendCmd(out, "AT+CPMS=\"SM\"");    // thử đọc SIM
             sendCmd(out, "AT+CMGL=\"ALL\"");   // đọc tất cả SMS
 
