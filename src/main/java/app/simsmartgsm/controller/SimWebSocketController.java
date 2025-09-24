@@ -21,14 +21,15 @@ public class SimWebSocketController {
 
 
     @PostMapping("/start")
-    public ResponseEntity<String> startScan() {
-        List<SimRequest.PortInfo> portData = scanner.scanAllPorts();
-        System.out.println("startt scan");
-        System.out.println("startt scan size " + portData.size());
+    public ResponseEntity<List<SimRequest.PortInfo>> startScan() {
+        List<SimRequest.PortInfo> portData = scanner.scanAndPush(true);
+        return ResponseEntity.ok(portData);
+    }
 
-        messagingTemplate.convertAndSend("/topic/simlist", portData);
 
-        return ResponseEntity.ok("✅ Scan started, result pushed to /topic/simlist");
+    @GetMapping("/snapshot")
+    public ResponseEntity<List<SimRequest.PortInfo>> getSnapshot() {
+        return ResponseEntity.ok(scanner.getLastSnapshot());
     }
 
 }

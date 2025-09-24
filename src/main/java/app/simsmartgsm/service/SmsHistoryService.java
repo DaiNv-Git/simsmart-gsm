@@ -7,13 +7,14 @@ import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.*;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
@@ -23,12 +24,14 @@ import java.util.concurrent.*;
 public class SmsHistoryService {
 
     private static final Logger log = LoggerFactory.getLogger(SmsHistoryService.class);
-    private final SmsMessageRepository repository;
 
+    private final SmsMessageRepository repository;
+    private final SimpMessagingTemplate messagingTemplate;
+
+    private final Map<String, Set<String>> lastInboxSnapshot = new ConcurrentHashMap<>();
     private static final DateTimeFormatter TS_FORMAT =
             DateTimeFormatter.ofPattern("yy/MM/dd HH:mm:ss");
 
-    // ================== Lấy từ MongoDB ==================
     public Page<SmsMessage> getSentMessages(int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by("timestamp").descending());
         return repository.findByTypeAndDeviceName("OK", getDeviceName(), pageable);
@@ -47,13 +50,11 @@ public class SmsHistoryService {
         }
     }
 
-    // ================== Helpers GSM ==================
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);
         port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
-        if (!port.openPort())
-            throw new RuntimeException("❌ Không thể mở cổng " + portName);
+        if (!port.openPort()) throw new RuntimeException("❌ Không thể mở cổng " + portName);
         return port;
     }
 
@@ -64,6 +65,7 @@ public class SmsHistoryService {
         Thread.sleep(150);
     }
 
+    // đọc SMS từ bộ nhớ SIM/ME
     private List<Map<String, String>> readFromMemory(String portName, String memory, String filter) {
         List<Map<String, String>> messages = new ArrayList<>();
         SerialPort port = openPort(portName);
@@ -79,7 +81,7 @@ public class SmsHistoryService {
 
             String header = null;
             long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < 2000 && sc.hasNextLine()) { // timeout 2s
+            while (System.currentTimeMillis() - start < 2000 && sc.hasNextLine()) {
                 String line = sc.nextLine().trim();
                 if (line.isEmpty()) continue;
 
@@ -99,27 +101,31 @@ public class SmsHistoryService {
     }
 
     private List<Map<String, String>> readInboxFromPort(String portName) {
-        // 1. Thử đọc tin chưa đọc
         List<Map<String, String>> msgs = readFromMemory(portName, "SM", "REC UNREAD");
-        // 2. Nếu rỗng → fallback đọc tất cả
-        if (msgs.isEmpty()) {
-            msgs = readFromMemory(portName, "SM", "ALL");
-        }
-        // 3. Nếu SIM rỗng → thử bộ nhớ máy
-        if (msgs.isEmpty()) {
-            msgs = readFromMemory(portName, "ME", "ALL");
-        }
+        if (msgs.isEmpty()) msgs = readFromMemory(portName, "SM", "ALL");
+        if (msgs.isEmpty()) msgs = readFromMemory(portName, "ME", "ALL");
         return msgs;
     }
 
-    // ================== API đọc inbox toàn bộ port ==================
     public Page<Map<String, String>> getInboxMessages(int page, int size) {
-        SerialPort[] ports = SerialPort.getCommPorts();
-        if (ports.length == 0) {
-            return Page.empty();
-        }
+        List<Map<String, String>> all = scanAllPorts();
 
-        ExecutorService exec = Executors.newFixedThreadPool(ports.length); // 1 thread / port
+        // sort newest first
+        all.sort((m1, m2) -> m2.getOrDefault("ReceivedTime", "")
+                .compareTo(m1.getOrDefault("ReceivedTime", "")));
+
+        int start = page * size;
+        int end = Math.min(start + size, all.size());
+        if (start > end) start = end;
+
+        return new PageImpl<>(all.subList(start, end), PageRequest.of(page, size), all.size());
+    }
+
+    private List<Map<String, String>> scanAllPorts() {
+        SerialPort[] ports = SerialPort.getCommPorts();
+        if (ports.length == 0) return Collections.emptyList();
+
+        ExecutorService exec = Executors.newFixedThreadPool(ports.length);
         List<Callable<List<Map<String, String>>>> tasks = new ArrayList<>();
         for (SerialPort sp : ports) {
             tasks.add(() -> readInboxFromPort(sp.getSystemPortName()));
@@ -129,50 +135,41 @@ public class SmsHistoryService {
         try {
             List<Future<List<Map<String, String>>>> futures = exec.invokeAll(tasks);
             for (Future<List<Map<String, String>>> f : futures) {
-                try {
-                    all.addAll(f.get());
-                } catch (Exception ex) {
-                    log.error("❌ Lỗi thread khi đọc inbox: {}", ex.getMessage());
-                }
+                all.addAll(f.get());
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            log.error("❌ Lỗi thread khi đọc inbox: {}", e.getMessage());
         } finally {
             exec.shutdown();
         }
-
-        // sort theo thời gian mới nhất
-        all.sort((m1, m2) -> {
-            try {
-                String ts1 = m1.getOrDefault("ReceivedTime", "");
-                String ts2 = m2.getOrDefault("ReceivedTime", "");
-                LocalDateTime d1 = LocalDateTime.parse(ts1, TS_FORMAT);
-                LocalDateTime d2 = LocalDateTime.parse(ts2, TS_FORMAT);
-                return d2.compareTo(d1); // DESC
-            } catch (Exception e) {
-                return 0;
-            }
-        });
-
-        int start = page * size;
-        int end = Math.min(start + size, all.size());
-        if (start > end) start = end;
-
-        return new PageImpl<>(all.subList(start, end), PageRequest.of(page, size), all.size());
+        return all;
     }
 
-    // ================== Parse SMS ==================
+    @Scheduled(fixedRate = 30000)
+    public void pushNewInboxMessages() {
+        List<Map<String, String>> all = scanAllPorts();
+        for (Map<String, String> msg : all) {
+            String uniqueId = msg.get("Phone") + "|" + msg.get("ReceivedTime") + "|" + msg.get("MessageContent");
+            String port = msg.getOrDefault("COM", "unknown");
+
+            Set<String> seen = lastInboxSnapshot.computeIfAbsent(port, k -> new HashSet<>());
+            if (!seen.contains(uniqueId)) {
+                seen.add(uniqueId);
+                messagingTemplate.convertAndSend("/topic/sms/inbox", msg);
+                log.info("📩 Tin nhắn mới từ {} -> {}", port, msg);
+            }
+        }
+    }
+
+    // parse 1 SMS
     private Map<String, String> parseInbox(String port, String header, String content) {
         Map<String, String> sms = new LinkedHashMap<>();
         sms.put("COM", port);
         sms.put("MessageContent", content);
 
         try {
-            // ví dụ: +CMGL: 0,"REC READ","+84901234567",,"25/09/24,14:07:17+36"
             String[] parts = header.split(",");
-            if (parts.length >= 2) {
-                sms.put("Status", parts[1].replace("\"", "").trim());
-            }
+            if (parts.length >= 2) sms.put("Status", parts[1].replace("\"", "").trim());
             if (parts.length >= 3) {
                 String phone = parts[2].replace("\"", "").trim();
                 sms.put("Phone", phone);

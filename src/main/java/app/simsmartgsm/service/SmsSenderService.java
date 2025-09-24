@@ -144,7 +144,7 @@ public class SmsSenderService {
     // Gửi nhiều số điện thoại 1 nội dung
     public List<SmsMessage> sendBulk(List<String> phones, String text) {
         SerialPort[] ports = SerialPort.getCommPorts();
-        if (ports.length == 0) throw new RuntimeException("❌ Không tìm thấy port nào khả dụng");
+        if (ports.length == 0) throw new RuntimeException("Không tìm thấy port nào khả dụng");
 
         ExecutorService exec = Executors.newFixedThreadPool(Math.min(phones.size(), ports.length));
         List<Future<SmsMessage>> futures = new ArrayList<>();
