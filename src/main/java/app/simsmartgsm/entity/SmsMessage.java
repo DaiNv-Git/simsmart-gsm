@@ -17,6 +17,7 @@ public class SmsMessage {
     private String id;
     private String deviceName;
     private String fromPort;
+    private String fromPhone;
     private String toPhone;
     private String message;
     private String modemResponse;

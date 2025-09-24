@@ -24,7 +24,6 @@ public class SmsSenderService {
     private final SmsMessageRepository smsRepo;
     private static final int MAX_RETRY = 3;
 
-    // Lấy device name (tên máy tính)
     private String getDeviceName() {
         try {
             return InetAddress.getLocalHost().getHostName();
@@ -33,7 +32,6 @@ public class SmsSenderService {
         }
     }
 
-    // Mở port COM
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);
@@ -51,15 +49,43 @@ public class SmsSenderService {
         Thread.sleep(200);
     }
 
-    // Gửi 1 SMS với retry
+    private String getSimPhoneNumber(SerialPort port) {
+        String phone = "unknown";
+        try (OutputStream out = port.getOutputStream();
+             InputStream in = port.getInputStream();
+             Scanner sc = new Scanner(in, StandardCharsets.US_ASCII)) {
+
+            sendCmd(out, "AT+CNUM");
+            long start = System.currentTimeMillis();
+            while (System.currentTimeMillis() - start < 2000 && sc.hasNextLine()) {
+                String line = sc.nextLine().trim();
+                if (line.contains("+CNUM")) {
+                    String[] parts = line.split(",");
+                    if (parts.length >= 2) {
+                        phone = parts[1].replace("\"", "").trim();
+                        break;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("⚠️ Không lấy được số điện thoại SIM ở {}: {}", port.getSystemPortName(), e.getMessage());
+        }
+        return phone;
+    }
+
     private SmsMessage sendOne(String portName, String phoneNumber, String text) {
         String status = "FAIL";
         StringBuilder resp = new StringBuilder();
+        String fromPhone = "unknown";
 
         for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
             SerialPort port = null;
             try {
                 port = openPort(portName);
+
+                // lấy số điện thoại của SIM gửi
+                fromPhone = getSimPhoneNumber(port);
+
                 try (OutputStream out = port.getOutputStream();
                      InputStream in = port.getInputStream();
                      Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
@@ -101,10 +127,10 @@ public class SmsSenderService {
             } catch (InterruptedException ignored) {}
         }
 
-        // Lưu vào DB (bắt buộc)
         SmsMessage saved = SmsMessage.builder()
                 .deviceName(getDeviceName())
                 .fromPort(portName)
+                .fromPhone(fromPhone)   // số điện thoại SIM gửi
                 .toPhone(phoneNumber)
                 .message(text)
                 .type(status) // OK hoặc FAIL
