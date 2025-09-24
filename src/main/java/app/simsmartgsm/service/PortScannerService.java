@@ -45,7 +45,7 @@ public class PortScannerService {
         }
     }
 
-    @Scheduled(fixedRate = 20_000)
+    @Scheduled(fixedRate = 200_000)
     public void periodicScan() {
         for (Map.Entry<String, AtCommandWorker> entry : workers.entrySet()) {
             String portName = entry.getKey();

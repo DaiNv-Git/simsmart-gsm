@@ -1,4 +1,4 @@
-package app.simsmartgsm.Scheduled;
+package app.simsmartgsm.scheduled;
 
 import app.simsmartgsm.dto.request.SimRequest;
 import app.simsmartgsm.service.PortScannerService;
