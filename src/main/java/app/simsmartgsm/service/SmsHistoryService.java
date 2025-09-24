@@ -26,7 +26,6 @@ public class SmsHistoryService {
     private static final DateTimeFormatter TS_FORMAT =
             DateTimeFormatter.ofPattern("yy/MM/dd HH:mm:ss");
 
-    // ================== Lấy từ MongoDB ==================
     public Page<SmsMessage> getSentMessages(int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by("timestamp").descending());
         return repository.findByType("OK", pageable);
@@ -50,9 +49,11 @@ public class SmsHistoryService {
         log.debug("➡️ {}", cmd);
         out.write((cmd + "\r").getBytes(StandardCharsets.US_ASCII));
         out.flush();
-        Thread.sleep(200);
+        Thread.sleep(150);
     }
-    private List<Map<String, String>> readInboxFromPort(String portName) {
+
+    /** Đọc SMS từ 1 bộ nhớ (SM hoặc ME) */
+    private List<Map<String, String>> readFromMemory(String portName, String memory) {
         List<Map<String, String>> messages = new ArrayList<>();
         SerialPort port = openPort(portName);
 
@@ -62,16 +63,14 @@ public class SmsHistoryService {
 
             sendCmd(out, "AT+CMGF=1");
             sendCmd(out, "AT+CSCS=\"GSM\"");
-            sendCmd(out, "AT+CPMS=\"SM\"");    // thử đọc SIM
-            sendCmd(out, "AT+CMGL=\"ALL\"");   // đọc tất cả SMS
+            sendCmd(out, "AT+CPMS=\"" + memory + "\"");
+            sendCmd(out, "AT+CMGL=\"ALL\"");
 
             String header = null;
             long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < 10000 && sc.hasNextLine()) {
+            while (System.currentTimeMillis() - start < 7000 && sc.hasNextLine()) {
                 String line = sc.nextLine().trim();
                 if (line.isEmpty()) continue;
-
-                log.info("[{}] <- {}", portName, line);
 
                 if (line.startsWith("+CMGL:")) {
                     header = line;
@@ -80,64 +79,56 @@ public class SmsHistoryService {
                     header = null;
                 }
             }
-
-            // Nếu không thấy tin nào thì thử đọc bộ nhớ máy
-            if (messages.isEmpty()) {
-                sendCmd(out, "AT+CPMS=\"ME\"");
-                sendCmd(out, "AT+CMGL=\"ALL\"");
-                start = System.currentTimeMillis();
-                header = null;
-                while (System.currentTimeMillis() - start < 5000 && sc.hasNextLine()) {
-                    String line = sc.nextLine().trim();
-                    if (line.isEmpty()) continue;
-
-                    log.info("[{}][ME] <- {}", portName, line);
-
-                    if (line.startsWith("+CMGL:")) {
-                        header = line;
-                    } else if (header != null) {
-                        messages.add(parseInbox(portName, header, line));
-                        header = null;
-                    }
-                }
-            }
-
         } catch (Exception e) {
-            log.error("❌ Lỗi đọc inbox từ {}: {}", portName, e.getMessage());
+            log.error("❌ Lỗi đọc SMS từ {}[{}]: {}", portName, memory, e.getMessage());
         } finally {
-            port.closePort();
+            try { port.closePort(); } catch (Exception ignore) {}
         }
         return messages;
     }
 
+    /** Đọc inbox từ 1 port (ưu tiên SM, nếu trống thì thử ME) */
+    private List<Map<String, String>> readInboxFromPort(String portName) {
+        List<Map<String, String>> msgs = readFromMemory(portName, "SM");
+        if (msgs.isEmpty()) {
+            msgs = readFromMemory(portName, "ME");
+        }
+        return msgs;
+    }
+
+    /** Đọc tất cả port với phân trang */
     public Page<Map<String, String>> getInboxMessages(int page, int size) {
         SerialPort[] ports = SerialPort.getCommPorts();
         ExecutorService exec = Executors.newFixedThreadPool(
                 Math.min(ports.length, Runtime.getRuntime().availableProcessors() * 2)
         );
 
-        List<Future<List<Map<String, String>>>> futures = new ArrayList<>();
+        List<Callable<List<Map<String, String>>>> tasks = new ArrayList<>();
         for (SerialPort sp : ports) {
-            futures.add(exec.submit(() -> readInboxFromPort(sp.getSystemPortName())));
+            tasks.add(() -> readInboxFromPort(sp.getSystemPortName()));
         }
 
         List<Map<String, String>> all = new ArrayList<>();
-        for (Future<List<Map<String, String>>> f : futures) {
-            try {
-                all.addAll(f.get());
-            } catch (Exception ex) {
-                log.error("❌ Lỗi thread khi đọc inbox: {}", ex.getMessage());
+        try {
+            List<Future<List<Map<String, String>>>> futures = exec.invokeAll(tasks);
+            for (Future<List<Map<String, String>>> f : futures) {
+                try {
+                    all.addAll(f.get());
+                } catch (Exception ex) {
+                    log.error("❌ Lỗi thread khi đọc inbox: {}", ex.getMessage());
+                }
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            exec.shutdown();
         }
-        exec.shutdown();
 
-        // sắp xếp theo ReceivedTime DESC
+        // sắp xếp theo thời gian DESC
         all.sort((m1, m2) -> {
             try {
-                String ts1 = m1.getOrDefault("ReceivedTime", "");
-                String ts2 = m2.getOrDefault("ReceivedTime", "");
-                LocalDateTime d1 = LocalDateTime.parse(ts1, TS_FORMAT);
-                LocalDateTime d2 = LocalDateTime.parse(ts2, TS_FORMAT);
+                LocalDateTime d1 = LocalDateTime.parse(m1.getOrDefault("ReceivedTime", ""), TS_FORMAT);
+                LocalDateTime d2 = LocalDateTime.parse(m2.getOrDefault("ReceivedTime", ""), TS_FORMAT);
                 return d2.compareTo(d1);
             } catch (Exception e) {
                 return 0;
@@ -157,8 +148,11 @@ public class SmsHistoryService {
         sms.put("MessageContent", content);
 
         try {
-            // ví dụ: +CMGL: 0,"REC UNREAD","+84901234567",,"25/09/24,14:07:17+36"
+            // ví dụ: +CMGL: 0,"REC READ","+84901234567",,"25/09/24,14:07:17+36"
             String[] parts = header.split(",");
+            if (parts.length >= 2) {
+                sms.put("Status", parts[1].replace("\"", "").trim());
+            }
             if (parts.length >= 3) {
                 String phone = parts[2].replace("\"", "").trim();
                 sms.put("Phone", phone);
