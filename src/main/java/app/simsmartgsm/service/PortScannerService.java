@@ -189,14 +189,18 @@ public class PortScannerService {
 
     private String detectProvider(String imsi) {
         if (imsi == null) return null;
+
         if (imsi.startsWith("44010")) return "NTT Docomo (JP)";
+        if (imsi.startsWith("44011")) return "Rakuten Mobile (JP)"; // thêm dòng này
         if (imsi.startsWith("44020")) return "SoftBank (JP)";
         if (imsi.startsWith("44050")) return "KDDI au (JP)";
         if (imsi.startsWith("45201")) return "Mobifone (VN)";
         if (imsi.startsWith("45202")) return "Vinaphone (VN)";
         if (imsi.startsWith("45204")) return "Viettel (VN)";
+
         return "Unknown";
     }
+
 
     @PreDestroy
     public void shutdown() {
