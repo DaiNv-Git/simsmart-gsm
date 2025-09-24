@@ -1,79 +1,49 @@
 package app.simsmartgsm.helper;
 
 import com.fazecast.jSerialComm.SerialPort;
-
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-
 import app.simsmartgsm.dto.request.SimRequest.PortInfo;
 import app.simsmartgsm.uitils.AtCommandHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-public class AtCommandWorker implements Runnable {
+public class AtCommandWorker {
 
     private static final Logger log = LoggerFactory.getLogger(AtCommandWorker.class);
 
-    private final SerialPort port;
-    private final AtCommandHelper helper;
-    private final BlockingQueue<Runnable> taskQueue = new LinkedBlockingQueue<>();
-    private volatile boolean running = true;
+    private final String portName;
 
-    public AtCommandWorker(SerialPort port) throws IOException {
-        this.port = port;
-        this.port.setBaudRate(115200);
-        this.port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 1000, 1000);
-
-        if (!this.port.openPort()) {
-            throw new IOException("Cannot open port " + port.getSystemPortName());
-        }
-
-        this.helper = new AtCommandHelper(port);
-    }
-
-    public void enqueue(Runnable task) {
-        taskQueue.add(task);
-    }
-
-    @Override
-    public void run() {
-        while (running) {
-            try {
-                Runnable task = taskQueue.take();
-                task.run();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                running = false;
-            } catch (Exception ex) {
-                log.error("Worker error on {}: {}", port.getSystemPortName(), ex.getMessage());
-            }
-        }
-        try {
-            port.closePort();
-        } catch (Exception ignore) {}
+    public AtCommandWorker(String portName) {
+        this.portName = portName;
     }
 
     public PortInfo doScan() {
+        SerialPort port = SerialPort.getCommPort(portName);
+        port.setBaudRate(115200);
+        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 1000, 1000);
+
         try {
-            // Gửi lệnh AT cần thiết
-            String ccid = helper.sendCommand("AT+CCID", 1000, 0);
-            ccid = parseCcid(ccid);
+            if (!port.openPort()) {
+                return new PortInfo(portName, false, null, null, null, "Cannot open port");
+            }
 
-            String imsi = helper.sendCommand("AT+CIMI", 1000, 0);
-            imsi = parseImsi(imsi);
+            AtCommandHelper helper = new AtCommandHelper(port);
 
-            String phone = helper.sendCommand("AT+CNUM", 1000, 0);
-            phone = parsePhoneNumberFromCnum(phone);
-
+            String ccid = parseCcid(helper.sendCommand("AT+CCID", 1000, 0));
+            String imsi = parseImsi(helper.sendCommand("AT+CIMI", 1000, 0));
+            String phone = parsePhoneNumberFromCnum(helper.sendCommand("AT+CNUM", 1000, 0));
             String provider = detectProvider(imsi);
 
             boolean ok = (ccid != null) || (imsi != null) || (phone != null);
             String msg = ok ? "OK" : "No data";
 
-            return new PortInfo(port.getSystemPortName(), ok, provider, phone, ccid, msg);
+            return new PortInfo(portName, ok, provider, phone, ccid, msg);
         } catch (Exception e) {
-            return new PortInfo(port.getSystemPortName(), false, null, null, null, "Error: " + e.getMessage());
+            return new PortInfo(portName, false, null, null, null, "Error: " + e.getMessage());
+        } finally {
+            if (port.isOpen()) {
+                port.closePort();
+                log.info("Closed port {}", portName);
+            }
         }
     }
 
