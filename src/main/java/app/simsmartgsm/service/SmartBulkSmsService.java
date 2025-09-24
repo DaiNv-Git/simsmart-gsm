@@ -1,13 +1,11 @@
 package app.simsmartgsm.service;
 
-import app.simsmartgsm.dto.request.SmartBulkSmsRequest;
 import app.simsmartgsm.entity.SmsMessage;
 import app.simsmartgsm.repository.SmsMessageRepository;
 import com.fazecast.jSerialComm.SerialPort;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 

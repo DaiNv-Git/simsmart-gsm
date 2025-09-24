@@ -10,95 +10,135 @@ import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.Scanner;
+import java.util.*;
+import java.util.concurrent.*;
 
 @Service
 @RequiredArgsConstructor
 public class SmsSenderService {
 
     private static final Logger log = LoggerFactory.getLogger(SmsSenderService.class);
-
     private final SmsMessageRepository smsRepo;
+    private static final int MAX_RETRY = 3;
 
+    // Lấy device name (tên máy tính)
+    private String getDeviceName() {
+        try {
+            return InetAddress.getLocalHost().getHostName();
+        } catch (Exception e) {
+            return "unknown-device";
+        }
+    }
+
+    // Mở port COM
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);
-        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
-        if (!port.openPort()) {
-            throw new RuntimeException("❌ Không thể mở cổng " + portName);
-        }
+        port.setComPortTimeouts(
+                SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000
+        );
+        if (!port.openPort()) throw new RuntimeException("❌ Không thể mở cổng " + portName);
         return port;
     }
 
     private void sendCmd(OutputStream out, String cmd) throws Exception {
-        log.info("➡️ {}", cmd);
+        log.debug("➡️ {}", cmd);
         out.write((cmd + "\r").getBytes(StandardCharsets.US_ASCII));
         out.flush();
         Thread.sleep(200);
     }
 
-    /**
-     * Gửi 1 SMS qua port và lưu DB
-     */
-    public SmsMessage sendAndSave(String deviceName, String portName, String phoneNumber, String text) {
-        SerialPort port = openPort(portName);
-        StringBuilder resp = new StringBuilder();
+    // Gửi 1 SMS với retry
+    private SmsMessage sendOne(String portName, String phoneNumber, String text) {
         String status = "FAIL";
+        StringBuilder resp = new StringBuilder();
 
-        try (OutputStream out = port.getOutputStream();
-             InputStream in = port.getInputStream()) {
+        for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
+            SerialPort port = null;
+            try {
+                port = openPort(portName);
+                try (OutputStream out = port.getOutputStream();
+                     InputStream in = port.getInputStream();
+                     Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
 
-            Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII);
+                    sendCmd(out, "AT+CMGF=1");
+                    sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
 
-            // set text mode
-            sendCmd(out, "AT+CMGF=1");
+                    Thread.sleep(500); // chờ dấu '>'
 
-            // chuẩn bị gửi
-            sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
+                    out.write(text.getBytes(StandardCharsets.US_ASCII));
+                    out.write(0x1A);
+                    out.flush();
 
-            Thread.sleep(500); // đợi dấu '>'
-
-            // nội dung + Ctrl+Z
-            out.write(text.getBytes(StandardCharsets.US_ASCII));
-            out.write(0x1A);
-            out.flush();
-
-            long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < 5000 && scanner.hasNextLine()) {
-                String line = scanner.nextLine().trim();
-                if (!line.isEmpty()) {
-                    resp.append(line).append("\n");
-                    if (line.contains("OK")) {
-                        status = "OK";
-                        break;
-                    }
-                    if (line.contains("ERROR")) {
-                        status = "FAIL";
-                        break;
+                    long start = System.currentTimeMillis();
+                    while (System.currentTimeMillis() - start < 7000 && scanner.hasNextLine()) {
+                        String line = scanner.nextLine().trim();
+                        if (!line.isEmpty()) {
+                            resp.append(line).append("\n");
+                            if (line.contains("OK")) {
+                                status = "OK";
+                                break;
+                            }
+                            if (line.contains("ERROR")) {
+                                status = "FAIL";
+                                break;
+                            }
+                        }
                     }
                 }
+            } catch (Exception e) {
+                log.warn("⚠️ Lỗi gửi SMS lần {}/{} qua {} -> {}: {}", attempt, MAX_RETRY, portName, phoneNumber, e.getMessage());
+            } finally {
+                if (port != null) port.closePort();
             }
 
-        } catch (Exception e) {
-            log.error("❌ Lỗi gửi SMS qua {}: {}", portName, e.getMessage());
-            resp.append("Exception: ").append(e.getMessage());
-        } finally {
-            port.closePort();
+            if ("OK".equals(status)) break; // thành công thì thoát
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException ignored) {}
         }
 
+        // Lưu vào DB (bắt buộc)
         SmsMessage saved = SmsMessage.builder()
-                .deviceName(deviceName)
+                .deviceName(getDeviceName())
                 .fromPort(portName)
                 .toPhone(phoneNumber)
                 .message(text)
-                .type(status)
+                .type(status) // OK hoặc FAIL
                 .modemResponse(resp.toString().trim())
                 .timestamp(Instant.now())
                 .build();
 
-
         return smsRepo.save(saved);
+    }
+
+    // Gửi nhiều số điện thoại 1 nội dung
+    public List<SmsMessage> sendBulk(List<String> phones, String text) {
+        SerialPort[] ports = SerialPort.getCommPorts();
+        if (ports.length == 0) throw new RuntimeException("❌ Không tìm thấy port nào khả dụng");
+
+        ExecutorService exec = Executors.newFixedThreadPool(Math.min(phones.size(), ports.length));
+        List<Future<SmsMessage>> futures = new ArrayList<>();
+        List<SmsMessage> results = new ArrayList<>();
+
+        int idx = 0;
+        for (String phone : phones) {
+            String portName = ports[idx % ports.length].getSystemPortName(); // round-robin
+            idx++;
+            futures.add(exec.submit(() -> sendOne(portName, phone, text)));
+        }
+
+        for (Future<SmsMessage> f : futures) {
+            try {
+                results.add(f.get());
+            } catch (Exception e) {
+                log.error("❌ Lỗi bulk send: {}", e.getMessage());
+            }
+        }
+        exec.shutdown();
+        return results;
     }
 }

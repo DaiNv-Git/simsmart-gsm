@@ -7,6 +7,6 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public interface SmsMessageRepository extends MongoRepository<SmsMessage, Long> {
-    Page<SmsMessage> findByType(String type, Pageable pageable);
+    Page<SmsMessage> findByTypeAndDeviceName(String type,String deviceName, Pageable pageable);
 
 }

@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -26,17 +27,24 @@ public class SmsHistoryService {
     private static final DateTimeFormatter TS_FORMAT =
             DateTimeFormatter.ofPattern("yy/MM/dd HH:mm:ss");
 
-    public Page<SmsMessage> getSentMessages(int page, int size) {
+    public Page<SmsMessage> getSentMessages( int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by("timestamp").descending());
-        return repository.findByType("OK", pageable);
+        return repository.findByTypeAndDeviceName("OK", getDeviceName(), pageable);
     }
 
-    public Page<SmsMessage> getFailedMessages(int page, int size) {
+    public Page<SmsMessage> getFailedMessages( int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by("timestamp").descending());
-        return repository.findByType("FAIL", pageable);
+        return repository.findByTypeAndDeviceName("FAIL", getDeviceName(), pageable);
     }
 
-    // ================== Đọc inbox từ GSM ==================
+    private String getDeviceName() {
+        try {
+            return InetAddress.getLocalHost().getHostName();
+        } catch (Exception e) {
+            return "unknown-device";
+        }
+    }
+
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);
