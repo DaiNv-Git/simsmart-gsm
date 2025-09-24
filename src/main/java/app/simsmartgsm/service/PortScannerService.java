@@ -60,15 +60,8 @@ public class PortScannerService {
             String portName = port.getSystemPortName();
             AtCommandWorker worker = new AtCommandWorker(portName);
             PortInfo info = worker.doScan();
-
-            PortInfo old = lastSnapshot.get(portName);
             lastSnapshot.put(portName, info);
             result.add(info);
-
-            if (pushSocket && (old == null || !old.equals(info))) {
-                messagingTemplate.convertAndSend("/topic/simlist", Collections.singletonList(info));
-                log.info("📡 Pushed SIM {} to /topic/simlist", portName);
-            }
         }
         return result;
     }
