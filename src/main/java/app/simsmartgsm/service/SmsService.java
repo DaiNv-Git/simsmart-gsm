@@ -9,11 +9,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.*;
 
 @Service
 public class SmsService {
     private static final Logger log = LoggerFactory.getLogger(SmsService.class);
 
+    // ====== Common Helpers ======
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);
@@ -23,18 +25,21 @@ public class SmsService {
     }
 
     private void sendCmd(OutputStream out, String cmd) throws Exception {
-        log.info("➡️ {}", cmd);
+        log.debug("➡️ {}", cmd);
         out.write((cmd + "\r").getBytes(StandardCharsets.US_ASCII));
         out.flush();
         Thread.sleep(200);
     }
 
-    // === đọc tin nhắn theo status cho 1 port ===
+    // ====== Đọc SMS theo status cho 1 port ======
     private List<Map<String, String>> readByStatus(String portName, String status) {
         List<Map<String, String>> messages = new ArrayList<>();
         SerialPort port = openPort(portName);
 
-        try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream(); Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
+        try (OutputStream out = port.getOutputStream();
+             InputStream in = port.getInputStream();
+             Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
+
             sendCmd(out, "AT+CMGF=1");        // text mode
             sendCmd(out, "AT+CSCS=\"GSM\""); // charset
             sendCmd(out, "AT+CPMS=\"MT\"");  // đọc cả SIM + modem
@@ -60,36 +65,55 @@ public class SmsService {
         } catch (Exception e) {
             log.error("❌ Lỗi đọc SMS {} từ {}: {}", status, portName, e.getMessage());
         } finally {
-            port.closePort();
+            try {
+                port.closePort();
+            } catch (Exception ignore) {}
         }
         return messages;
     }
 
-    // === API 1: đọc inbox (tin nhắn đến) của tất cả port ===
+    // ====== Đọc SMS của tất cả port theo status (đa luồng) ======
+    private String readAllPorts(String status) {
+        SerialPort[] ports = SerialPort.getCommPorts();
+        int poolSize = Math.min(ports.length, Runtime.getRuntime().availableProcessors() * 2);
+
+        ExecutorService executor = Executors.newFixedThreadPool(poolSize);
+        List<Future<List<Map<String, String>>>> futures = new ArrayList<>();
+
+        for (SerialPort sp : ports) {
+            futures.add(executor.submit(() -> readByStatus(sp.getSystemPortName(), status)));
+        }
+
+        List<Map<String, String>> all = new ArrayList<>();
+        for (Future<List<Map<String, String>>> f : futures) {
+            try {
+                all.addAll(f.get());
+            } catch (Exception e) {
+                log.error("❌ Lỗi khi lấy dữ liệu SMS song song: {}", e.getMessage());
+            }
+        }
+
+        executor.shutdown();
+        return toJson(all);
+    }
+
+    // ====== Public API ======
+    /** Inbox - tin nhắn đến */
     public String readInboxAll() {
         return readAllPorts("REC UNREAD");
     }
 
-    // === API 2: đọc sent (tin nhắn gửi đi) của tất cả port ===
+    /** Sent - tin nhắn đã gửi */
     public String readSentAll() {
         return readAllPorts("STO SENT");
     }
 
-    // === API 3: đọc failed (tin nhắn gửi đi lỗi) của tất cả port ===
+    /** Failed - tin nhắn gửi đi lỗi */
     public String readFailedAll() {
         return readAllPorts("STO UNSENT");
     }
 
-    // helper: đọc tất cả port với 1 status
-    private String readAllPorts(String status) {
-        SerialPort[] ports = SerialPort.getCommPorts();
-        List<Map<String, String>> all = new ArrayList<>();
-        for (SerialPort sp : ports) {
-            all.addAll(readByStatus(sp.getSystemPortName(), status));
-        }
-        return toJson(all);
-    }
-
+    // ====== JSON Helper ======
     private String toJson(List<Map<String, String>> list) {
         if (list.isEmpty()) return "[]";
         StringBuilder sb = new StringBuilder("[\n");
