@@ -1,4 +1,5 @@
 package app.simsmartgsm.service;
+
 import app.simsmartgsm.entity.SmsMessage;
 import app.simsmartgsm.repository.SmsMessageRepository;
 import com.fazecast.jSerialComm.SerialPort;
@@ -7,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.*;
 import org.springframework.stereotype.Service;
+
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -45,11 +47,11 @@ public class SmsHistoryService {
     }
 
     private void sendCmd(OutputStream out, String cmd) throws Exception {
+        log.debug("➡️ {}", cmd);
         out.write((cmd + "\r").getBytes(StandardCharsets.US_ASCII));
         out.flush();
         Thread.sleep(200);
     }
-
     private List<Map<String, String>> readInboxFromPort(String portName) {
         List<Map<String, String>> messages = new ArrayList<>();
         SerialPort port = openPort(portName);
@@ -58,16 +60,19 @@ public class SmsHistoryService {
              InputStream in = port.getInputStream();
              Scanner sc = new Scanner(in, StandardCharsets.US_ASCII)) {
 
-            sendCmd(out, "AT+CMGF=1");
-            sendCmd(out, "AT+CSCS=\"GSM\"");
-            sendCmd(out, "AT+CPMS=\"SM\"");
-            sendCmd(out, "AT+CMGL=\"REC UNREAD\"");
+            sendCmd(out, "AT+CMGF=1");          // text mode
+            sendCmd(out, "AT+CSCS=\"GSM\"");   // charset
+            sendCmd(out, "AT+CNMI=2,1,0,0,0"); // lưu SMS vào bộ nhớ
+            sendCmd(out, "AT+CPMS=\"SM\"");    // thử đọc SIM
+            sendCmd(out, "AT+CMGL=\"ALL\"");   // đọc tất cả SMS
 
             String header = null;
             long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < 7000 && sc.hasNextLine()) {
+            while (System.currentTimeMillis() - start < 10000 && sc.hasNextLine()) {
                 String line = sc.nextLine().trim();
                 if (line.isEmpty()) continue;
+
+                log.info("[{}] <- {}", portName, line);
 
                 if (line.startsWith("+CMGL:")) {
                     header = line;
@@ -76,6 +81,28 @@ public class SmsHistoryService {
                     header = null;
                 }
             }
+
+            // Nếu không thấy tin nào thì thử đọc bộ nhớ máy
+            if (messages.isEmpty()) {
+                sendCmd(out, "AT+CPMS=\"ME\"");
+                sendCmd(out, "AT+CMGL=\"ALL\"");
+                start = System.currentTimeMillis();
+                header = null;
+                while (System.currentTimeMillis() - start < 5000 && sc.hasNextLine()) {
+                    String line = sc.nextLine().trim();
+                    if (line.isEmpty()) continue;
+
+                    log.info("[{}][ME] <- {}", portName, line);
+
+                    if (line.startsWith("+CMGL:")) {
+                        header = line;
+                    } else if (header != null) {
+                        messages.add(parseInbox(portName, header, line));
+                        header = null;
+                    }
+                }
+            }
+
         } catch (Exception e) {
             log.error("❌ Lỗi đọc inbox từ {}: {}", portName, e.getMessage());
         } finally {
@@ -131,6 +158,7 @@ public class SmsHistoryService {
         sms.put("MessageContent", content);
 
         try {
+            // ví dụ: +CMGL: 0,"REC UNREAD","+84901234567",,"25/09/24,14:07:17+36"
             String[] parts = header.split(",");
             if (parts.length >= 3) {
                 String phone = parts[2].replace("\"", "").trim();
@@ -147,4 +175,3 @@ public class SmsHistoryService {
         return sms;
     }
 }
-
