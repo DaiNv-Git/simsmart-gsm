@@ -7,31 +7,16 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * PortScannerService (reworked)
- *
- * - Nếu không thể lấy số bằng AT+CNUM thì:
- *    1) Thử đọc inbox (AT+CMGL) và decode PDU nếu cần
- *    2) Nếu vẫn null và có CollectorService configured -> gửi SMS test đến collector và chờ mapping result
- * - Có throttle/backoff, lastAttempt tracking, pending map (CompletableFuture)
- *
- * Note: Requires an external CollectorService bean that listens collector port(s) and calls
- *       collectorService.resolvePending(ccid, phone) when an SMS arrives from a sent test SMS.
- */
 @Service
 public class PortScannerService {
 
     private static final Logger log = LoggerFactory.getLogger(PortScannerService.class);
-
-    // Tunables
+    
     private static final int THREAD_POOL_SIZE = Math.max(2, Runtime.getRuntime().availableProcessors());
     private static final int PER_PORT_TOTAL_TIMEOUT_MS = 6_000;
     private static final int CMD_TIMEOUT_SHORT_MS = 700;
@@ -154,70 +139,46 @@ public class PortScannerService {
             }
 
             // 7) If still null -> send SMS test to collector (if configured) with pending mechanism
+            // 7) If still null -> gửi SMS test ra collector (nếu có)
             if (phone == null && collectorService != null) {
-                // don't spam the same SIM: check lastAttemptAt
-                long now = System.currentTimeMillis();
-                Long lastAt = lastAttemptAt.getOrDefault(ccid, 0L);
-                if (now - lastAt >= MIN_RETRY_INTERVAL_MS) {
-                    lastAttemptAt.put(ccid, now);
+                // check cache để giảm gửi lại
+                if (lastKnownPhone.containsKey(ccid)) {
+                    phone = lastKnownPhone.get(ccid);
+                    log.info("{}: reused cached phone {}", portName, phone);
+                } else {
+                    long now = System.currentTimeMillis();
+                    Long lastAt = lastAttemptAt.getOrDefault(ccid, 0L);
+                    if (now - lastAt >= MIN_RETRY_INTERVAL_MS) {
+                        lastAttemptAt.put(ccid, now);
 
-                    // create pending future
-                    CompletableFuture<String> pending = new CompletableFuture<>();
-                    pendingByCcid.put(ccid, pending);
+                        CompletableFuture<String> pending = new CompletableFuture<>();
+                        pendingByCcid.put(ccid, pending);
 
-                    String collectorNumber = collectorService.getCollectorNumber();
-                    if (collectorNumber != null) {
-                        boolean sent = false;
-                        AtomicInteger sentCount = new AtomicInteger(0);
-                        for (int attempt = 0; attempt <= MAX_SMS_RETRIES; attempt++) {
-                            try {
-                                if (!isNetworkReady(helper)) {
-                                    log.debug("{}: network not ready, skipping send attempt", portName);
-                                    break;
-                                }
-                                // set text mode then send
-                                tryCmdWithTimeout(helper, "AT+CMGF=1", CMD_TIMEOUT_SHORT_MS, 0);
-                                tryCmdWithTimeout(helper, "AT+CMGS=\"" + collectorNumber + "\"", CMD_TIMEOUT_SHORT_MS, 0);
-                                // use helper.sendRaw to send message body + Ctrl+Z, assume helper has this method
-                                helper.sendRaw("SIMTEST:" + Optional.ofNullable(imsi).orElse(ccid) + (char)26, CMD_TIMEOUT_MED_MS);
-                                sent = true;
-                                sentCount.incrementAndGet();
-                                log.info("{}: sent test SMS to collector {} (attempt {})", portName, collectorNumber, attempt + 1);
-                                // give some small pause for operator/network
-                                Thread.sleep(500);
-                            } catch (Exception e) {
-                                log.warn("{}: failed to send test SMS attempt {} => {}", portName, attempt + 1, e.getMessage());
+                        String collectorNumber = collectorService.getCollectorNumber();
+                        String smsBody = "SIMTEST:" + Optional.ofNullable(imsi).orElse(ccid);
+
+                        try {
+                            // set text mode
+                            tryCmdWithTimeout(helper, "AT+CMGF=1", CMD_TIMEOUT_SHORT_MS, 0);
+                            tryCmdWithTimeout(helper, "AT+CMGS=\"" + collectorNumber + "\"", CMD_TIMEOUT_SHORT_MS, 0);
+                            helper.sendRaw(smsBody + (char)26, CMD_TIMEOUT_MED_MS);
+                            log.info("{}: sent test SMS to collector {}", portName, collectorNumber);
+
+                            // chờ collector trả về số
+                            String resolvedPhone = pending.get(COLLECTOR_WAIT_MS, TimeUnit.MILLISECONDS);
+                            if (resolvedPhone != null && !resolvedPhone.isEmpty()) {
+                                phone = resolvedPhone;
+                                lastKnownPhone.put(ccid, phone); // cache lại
+                                log.info("{}: resolved phone via collector: {}", portName, phone);
                             }
-                            if (sent) break;
-                        }
-                        if (sent) {
-                            try {
-                                // wait for collector to resolve pending
-                                String resolvedPhone = pending.get(COLLECTOR_WAIT_MS, TimeUnit.MILLISECONDS);
-                                if (resolvedPhone != null && !resolvedPhone.isEmpty()) {
-                                    phone = resolvedPhone;
-                                    lastKnownPhone.put(ccid, phone);
-                                    log.info("{}: resolved phone via collector: {}", portName, phone);
-                                } else {
-                                    log.debug("{}: collector returned null", portName);
-                                }
-                            } catch (TimeoutException te) {
-                                log.warn("{}: waiting collector timed out", portName);
-                            } catch (Exception ex) {
-                                log.warn("{}: error while waiting collector result: {}", portName, ex.getMessage());
-                            } finally {
-                                pendingByCcid.remove(ccid);
-                            }
-                        } else {
-                            log.debug("{}: could not send test SMS to collector (not sent)", portName);
+                        } catch (Exception e) {
+                            log.warn("{}: SMS test to collector failed: {}", portName, e.getMessage());
+                        } finally {
                             pendingByCcid.remove(ccid);
                         }
                     } else {
-                        log.debug("{}: collectorNumber is null", portName);
-                        pendingByCcid.remove(ccid);
+                        log.debug("{}: skip SMS test (backoff)", portName);
                     }
-                } else {
-                    log.debug("{}: skipping send test SMS due to backoff (lastAt {})", portName, lastAt);
                 }
             }
 
