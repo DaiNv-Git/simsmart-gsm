@@ -21,18 +21,20 @@ import java.util.concurrent.*;
 @Service
 @RequiredArgsConstructor
 public class SmsHistoryService {
+
     private static final Logger log = LoggerFactory.getLogger(SmsHistoryService.class);
 
     private final SmsMessageRepository repository;
     private static final DateTimeFormatter TS_FORMAT =
             DateTimeFormatter.ofPattern("yy/MM/dd HH:mm:ss");
 
-    public Page<SmsMessage> getSentMessages( int page, int size) {
+    // ================== Lấy từ MongoDB ==================
+    public Page<SmsMessage> getSentMessages(int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by("timestamp").descending());
         return repository.findByTypeAndDeviceName("OK", getDeviceName(), pageable);
     }
 
-    public Page<SmsMessage> getFailedMessages( int page, int size) {
+    public Page<SmsMessage> getFailedMessages(int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by("timestamp").descending());
         return repository.findByTypeAndDeviceName("FAIL", getDeviceName(), pageable);
     }
@@ -60,7 +62,7 @@ public class SmsHistoryService {
         Thread.sleep(150);
     }
 
-    /** Đọc SMS từ 1 bộ nhớ (SM hoặc ME) */
+    // đọc SMS từ 1 bộ nhớ (SM hoặc ME)
     private List<Map<String, String>> readFromMemory(String portName, String memory) {
         List<Map<String, String>> messages = new ArrayList<>();
         SerialPort port = openPort(portName);
@@ -95,7 +97,7 @@ public class SmsHistoryService {
         return messages;
     }
 
-    /** Đọc inbox từ 1 port (ưu tiên SM, nếu trống thì thử ME) */
+    // đọc inbox từ 1 port (ưu tiên SM, fallback ME)
     private List<Map<String, String>> readInboxFromPort(String portName) {
         List<Map<String, String>> msgs = readFromMemory(portName, "SM");
         if (msgs.isEmpty()) {
@@ -104,7 +106,7 @@ public class SmsHistoryService {
         return msgs;
     }
 
-    /** Đọc tất cả port với phân trang */
+    // đọc inbox từ tất cả port + phân trang
     public Page<Map<String, String>> getInboxMessages(int page, int size) {
         SerialPort[] ports = SerialPort.getCommPorts();
         ExecutorService exec = Executors.newFixedThreadPool(
@@ -132,7 +134,7 @@ public class SmsHistoryService {
             exec.shutdown();
         }
 
-        // sắp xếp theo thời gian DESC
+        // sắp xếp theo ReceivedTime DESC (mới nhất lên đầu)
         all.sort((m1, m2) -> {
             try {
                 LocalDateTime d1 = LocalDateTime.parse(m1.getOrDefault("ReceivedTime", ""), TS_FORMAT);
@@ -156,7 +158,6 @@ public class SmsHistoryService {
         sms.put("MessageContent", content);
 
         try {
-            // ví dụ: +CMGL: 0,"REC READ","+84901234567",,"25/09/24,14:07:17+36"
             String[] parts = header.split(",");
             if (parts.length >= 2) {
                 sms.put("Status", parts[1].replace("\"", "").trim());
@@ -172,7 +173,6 @@ public class SmsHistoryService {
                 sms.put("ReceivedTime", ts);
             }
         } catch (Exception ignore) {}
-
         return sms;
     }
 }
