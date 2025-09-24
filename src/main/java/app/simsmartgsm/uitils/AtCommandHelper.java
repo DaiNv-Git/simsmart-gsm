@@ -13,7 +13,7 @@ import java.nio.charset.StandardCharsets;
  * - đọc liên tục trong vòng timeout tổng
  * - hỗ trợ retry
  */
-public class AtCommandHelper {
+public class AtCommandHelper implements AutoCloseable {
 
     private final SerialPort port;
     private final InputStream in;
@@ -112,8 +112,10 @@ public class AtCommandHelper {
         } catch (IOException ignored) {}
     }
 
+    @Override
     public void close() {
         try { in.close(); } catch (Exception ignored) {}
         try { out.close(); } catch (Exception ignored) {}
     }
+
 }
