@@ -1,17 +1,22 @@
 package app.simsmartgsm.service;
+
+import app.simsmartgsm.dto.request.CollectorResolvedEvent;
 import app.simsmartgsm.uitils.AtCommandHelper;
 import com.fazecast.jSerialComm.SerialPort;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Lazy;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
+
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Service
-public class CollectorServiceImpl implements PortScannerService.CollectorService {
+public class CollectorServiceImpl {
 
     private static final Logger log = LoggerFactory.getLogger(CollectorServiceImpl.class);
 
@@ -20,18 +25,16 @@ public class CollectorServiceImpl implements PortScannerService.CollectorService
     private final ExecutorService readerExec = Executors.newSingleThreadExecutor();
     private volatile boolean running = false;
 
-    private String collectorNumber; // số của SIM collector
+    private String collectorNumber;
+    private final ApplicationEventPublisher publisher;
 
-    private final PortScannerService portScannerService;
-
-    public CollectorServiceImpl(@Lazy PortScannerService portScannerService) {
-        this.portScannerService = portScannerService;
+    public CollectorServiceImpl(ApplicationEventPublisher publisher) {
+        this.publisher = publisher;
     }
 
     @PostConstruct
     public void init() {
         try {
-     
             for (SerialPort port : SerialPort.getCommPorts()) {
                 try {
                     if (port.openPort()) {
@@ -48,16 +51,14 @@ public class CollectorServiceImpl implements PortScannerService.CollectorService
             }
 
             if (collectorPort == null) {
-                log.error("No free COM port found for collector!");
+                log.error("❌ No free COM port found for collector!");
                 return;
             }
 
-            // cấu hình modem collector
             helper.sendCommand("AT", 1000, 0);
-            helper.sendCommand("AT+CMGF=1", 1000, 0); // text mode
-            helper.sendCommand("AT+CNMI=2,1,0,0,0", 1000, 0); // enable URC for incoming SMS
+            helper.sendCommand("AT+CMGF=1", 1000, 0);
+            helper.sendCommand("AT+CNMI=2,1,0,0,0", 1000, 0);
 
-            // thử lấy số của SIM collector (nếu có)
             try {
                 String cnum = helper.sendCommand("AT+CNUM", 2000, 1);
                 collectorNumber = parsePhoneFromCnum(cnum);
@@ -74,9 +75,20 @@ public class CollectorServiceImpl implements PortScannerService.CollectorService
         }
     }
 
-    @Override
     public String getCollectorNumber() {
         return collectorNumber;
+    }
+
+    @EventListener
+    public void handleCollectorRequest(app.simsmartgsm.service.CollectorRequestEvent event) {
+        try {
+            log.info("Collector handling request for ccid={} from port={}", event.getCcid(), event.getPortName());
+            helper.sendCommand("AT+CMGF=1", 1000, 0);
+            helper.sendCommand("AT+CMGS=\"" + collectorNumber + "\"", 2000, 0);
+            helper.sendRaw("SIMTEST:" + event.getCcid() + (char) 26, 5000);
+        } catch (Exception e) {
+            log.error("Failed to send test SMS for ccid={} : {}", event.getCcid(), e.getMessage());
+        }
     }
 
     private void readLoop() {
@@ -89,7 +101,12 @@ public class CollectorServiceImpl implements PortScannerService.CollectorService
                     int len = collectorPort.readBytes(buf, Math.min(buf.length, avail));
                     if (len > 0) {
                         acc.append(new String(buf, 0, len, StandardCharsets.ISO_8859_1));
-                        processBuffer(acc);
+                        int idx;
+                        while ((idx = acc.indexOf("\r\n")) >= 0) {
+                            String line = acc.substring(0, idx).trim();
+                            acc.delete(0, idx + 2);
+                            processLine(line);
+                        }
                     }
                 } else {
                     Thread.sleep(100);
@@ -100,40 +117,13 @@ public class CollectorServiceImpl implements PortScannerService.CollectorService
         }
     }
 
-    private void processBuffer(StringBuilder acc) {
-        String raw = acc.toString();
-        // kiểm tra SMS đến
-        if (raw.contains("+CMT:")) {
-            String sender = parseSender(raw);
-            String ccid = parseCcidFromBody(raw);
-
-            if (ccid != null && sender != null) {
-                log.info("Collector received SMS from {} with ccid {}", sender, ccid);
-                portScannerService.resolvePendingFromCollector(ccid, sender);
-            }
-            acc.setLength(0); // reset buffer sau khi xử lý
+    private void processLine(String line) {
+        if (line.startsWith("SIMTEST:")) {
+            String ccid = line.substring(8).trim();
+            String sender = "unknown"; // có thể parse từ +CMT header
+            publisher.publishEvent(new CollectorResolvedEvent(ccid, sender));
+            log.info("Collector resolved ccid={} with phone={}", ccid, sender);
         }
-    }
-
-    private String parseSender(String raw) {
-        // ví dụ: +CMT: "+84901234567","","24/09/25,10:15:00+28"
-        int first = raw.indexOf("\"");
-        if (first >= 0) {
-            int second = raw.indexOf("\"", first + 1);
-            if (second > first) return raw.substring(first + 1, second);
-        }
-        return null;
-    }
-
-    private String parseCcidFromBody(String raw) {
-        // body có dạng SIMTEST:xxxxxxxx
-        int idx = raw.indexOf("SIMTEST:");
-        if (idx >= 0) {
-            String rest = raw.substring(idx + 8).trim();
-            String ccid = rest.split("\\s")[0];
-            return ccid;
-        }
-        return null;
     }
 
     private String parsePhoneFromCnum(String resp) {
