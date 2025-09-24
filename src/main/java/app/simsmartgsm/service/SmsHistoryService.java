@@ -23,8 +23,8 @@ import java.util.concurrent.*;
 public class SmsHistoryService {
 
     private static final Logger log = LoggerFactory.getLogger(SmsHistoryService.class);
-
     private final SmsMessageRepository repository;
+
     private static final DateTimeFormatter TS_FORMAT =
             DateTimeFormatter.ofPattern("yy/MM/dd HH:mm:ss");
 
@@ -47,11 +47,13 @@ public class SmsHistoryService {
         }
     }
 
+    // ================== Helpers GSM ==================
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);
         port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
-        if (!port.openPort()) throw new RuntimeException("Không thể mở cổng " + portName);
+        if (!port.openPort())
+            throw new RuntimeException("❌ Không thể mở cổng " + portName);
         return port;
     }
 
@@ -62,8 +64,7 @@ public class SmsHistoryService {
         Thread.sleep(150);
     }
 
-    // đọc SMS từ 1 bộ nhớ (SM hoặc ME)
-    private List<Map<String, String>> readFromMemory(String portName, String memory) {
+    private List<Map<String, String>> readFromMemory(String portName, String memory, String filter) {
         List<Map<String, String>> messages = new ArrayList<>();
         SerialPort port = openPort(portName);
 
@@ -71,14 +72,14 @@ public class SmsHistoryService {
              InputStream in = port.getInputStream();
              Scanner sc = new Scanner(in, StandardCharsets.US_ASCII)) {
 
-            sendCmd(out, "AT+CMGF=1");
+            sendCmd(out, "AT+CMGF=1"); // text mode
             sendCmd(out, "AT+CSCS=\"GSM\"");
             sendCmd(out, "AT+CPMS=\"" + memory + "\"");
-            sendCmd(out, "AT+CMGL=\"ALL\"");
+            sendCmd(out, "AT+CMGL=\"" + filter + "\"");
 
             String header = null;
             long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < 7000 && sc.hasNextLine()) {
+            while (System.currentTimeMillis() - start < 2000 && sc.hasNextLine()) { // timeout 2s
                 String line = sc.nextLine().trim();
                 if (line.isEmpty()) continue;
 
@@ -90,29 +91,35 @@ public class SmsHistoryService {
                 }
             }
         } catch (Exception e) {
-            log.error("❌ Lỗi đọc SMS từ {}[{}]: {}", portName, memory, e.getMessage());
+            log.error("❌ Lỗi đọc {}[{}]: {}", portName, memory, e.getMessage());
         } finally {
             try { port.closePort(); } catch (Exception ignore) {}
         }
         return messages;
     }
 
-    // đọc inbox từ 1 port (ưu tiên SM, fallback ME)
     private List<Map<String, String>> readInboxFromPort(String portName) {
-        List<Map<String, String>> msgs = readFromMemory(portName, "SM");
+        // 1. Thử đọc tin chưa đọc
+        List<Map<String, String>> msgs = readFromMemory(portName, "SM", "REC UNREAD");
+        // 2. Nếu rỗng → fallback đọc tất cả
         if (msgs.isEmpty()) {
-            msgs = readFromMemory(portName, "ME");
+            msgs = readFromMemory(portName, "SM", "ALL");
+        }
+        // 3. Nếu SIM rỗng → thử bộ nhớ máy
+        if (msgs.isEmpty()) {
+            msgs = readFromMemory(portName, "ME", "ALL");
         }
         return msgs;
     }
 
-    // đọc inbox từ tất cả port + phân trang
+    // ================== API đọc inbox toàn bộ port ==================
     public Page<Map<String, String>> getInboxMessages(int page, int size) {
         SerialPort[] ports = SerialPort.getCommPorts();
-        ExecutorService exec = Executors.newFixedThreadPool(
-                Math.min(ports.length, Runtime.getRuntime().availableProcessors() * 2)
-        );
+        if (ports.length == 0) {
+            return Page.empty();
+        }
 
+        ExecutorService exec = Executors.newFixedThreadPool(ports.length); // 1 thread / port
         List<Callable<List<Map<String, String>>>> tasks = new ArrayList<>();
         for (SerialPort sp : ports) {
             tasks.add(() -> readInboxFromPort(sp.getSystemPortName()));
@@ -134,13 +141,18 @@ public class SmsHistoryService {
             exec.shutdown();
         }
 
-
+        // sort theo thời gian mới nhất
         all.sort((m1, m2) -> {
-            String ts1 = m1.getOrDefault("ReceivedTime", "");
-            String ts2 = m2.getOrDefault("ReceivedTime", "");
-            return ts2.compareTo(ts1); // đảo ngược để newest lên đầu
+            try {
+                String ts1 = m1.getOrDefault("ReceivedTime", "");
+                String ts2 = m2.getOrDefault("ReceivedTime", "");
+                LocalDateTime d1 = LocalDateTime.parse(ts1, TS_FORMAT);
+                LocalDateTime d2 = LocalDateTime.parse(ts2, TS_FORMAT);
+                return d2.compareTo(d1); // DESC
+            } catch (Exception e) {
+                return 0;
+            }
         });
-
 
         int start = page * size;
         int end = Math.min(start + size, all.size());
@@ -149,12 +161,14 @@ public class SmsHistoryService {
         return new PageImpl<>(all.subList(start, end), PageRequest.of(page, size), all.size());
     }
 
+    // ================== Parse SMS ==================
     private Map<String, String> parseInbox(String port, String header, String content) {
         Map<String, String> sms = new LinkedHashMap<>();
         sms.put("COM", port);
         sms.put("MessageContent", content);
 
         try {
+            // ví dụ: +CMGL: 0,"REC READ","+84901234567",,"25/09/24,14:07:17+36"
             String[] parts = header.split(",");
             if (parts.length >= 2) {
                 sms.put("Status", parts[1].replace("\"", "").trim());
