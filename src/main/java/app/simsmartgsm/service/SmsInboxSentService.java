@@ -1,4 +1,5 @@
 package app.simsmartgsm.service;
+
 import com.fazecast.jSerialComm.SerialPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,6 +15,7 @@ import java.util.concurrent.*;
 public class SmsInboxSentService {
     private static final Logger log = LoggerFactory.getLogger(SmsInboxSentService.class);
 
+    // mở port
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);
@@ -28,7 +30,7 @@ public class SmsInboxSentService {
         Thread.sleep(200);
     }
 
-    /** Đọc SMS theo status từ 1 port */
+    // đọc sms theo status
     private List<Map<String, String>> readByStatus(String portName, String status) {
         List<Map<String, String>> messages = new ArrayList<>();
         SerialPort port = openPort(portName);
@@ -37,9 +39,9 @@ public class SmsInboxSentService {
              InputStream in = port.getInputStream();
              Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
 
-            sendCmd(out, "AT+CMGF=1");
-            sendCmd(out, "AT+CSCS=\"GSM\"");
-            sendCmd(out, "AT+CPMS=\"SM\"");
+            sendCmd(out, "AT+CMGF=1");        // text mode
+            sendCmd(out, "AT+CSCS=\"GSM\""); // charset
+            sendCmd(out, "AT+CPMS=\"SM\"");  // SIM storage
             sendCmd(out, "AT+CMGL=\"" + status + "\"");
 
             String header = null;
@@ -47,6 +49,7 @@ public class SmsInboxSentService {
             while (System.currentTimeMillis() - start < 5000 && scanner.hasNextLine()) {
                 String line = scanner.nextLine().trim();
                 if (line.isEmpty()) continue;
+
                 if (line.startsWith("+CMGL:")) {
                     header = line;
                 } else if (header != null) {
@@ -57,13 +60,13 @@ public class SmsInboxSentService {
         } catch (Exception e) {
             log.error("❌ Lỗi đọc {} từ {}: {}", status, portName, e.getMessage());
         } finally {
-            port.closePort();
+            try { port.closePort(); } catch (Exception ignore) {}
         }
         return messages;
     }
 
-    /** Đọc tất cả port với status */
-    private String readAllPorts(String status) {
+    // đọc tất cả port với status (đa luồng)
+    private List<Map<String, String>> readAllPorts(String status) {
         SerialPort[] ports = SerialPort.getCommPorts();
         ExecutorService exec = Executors.newFixedThreadPool(
                 Math.min(ports.length, Runtime.getRuntime().availableProcessors() * 2)
@@ -81,18 +84,24 @@ public class SmsInboxSentService {
             }
         }
         exec.shutdown();
-        return toJson(all);
+        return all;
     }
 
     // Public APIs
+    /** Đọc inbox (cả unread + read) */
     public String readInboxAll() {
-        return readAllPorts("REC UNREAD"); // tin nhắn đến chưa đọc
+        List<Map<String, String>> all = new ArrayList<>();
+        all.addAll(readAllPorts("REC UNREAD"));
+        all.addAll(readAllPorts("REC READ"));
+        return toJson(all);
     }
 
+    /** Đọc tin nhắn đã gửi */
     public String readSentAll() {
-        return readAllPorts("STO SENT"); // tin nhắn đã gửi
+        return toJson(readAllPorts("STO SENT"));
     }
 
+    // helper parse
     private Map<String, String> parseSms(String port, String header, String content) {
         Map<String, String> sms = new LinkedHashMap<>();
         sms.put("port", port);
@@ -110,6 +119,7 @@ public class SmsInboxSentService {
         return sms;
     }
 
+    // helper json
     private String toJson(List<Map<String, String>> list) {
         if (list.isEmpty()) return "[]";
         StringBuilder sb = new StringBuilder("[\n");
