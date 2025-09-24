@@ -8,7 +8,7 @@ import org.springframework.stereotype.Service;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Scanner;
+import java.util.*;
 
 @Service
 public class SmsService {
@@ -28,20 +28,22 @@ public class SmsService {
         log.info("➡️ {}", cmd);
         out.write((cmd + "\r").getBytes(StandardCharsets.US_ASCII));
         out.flush();
-        Thread.sleep(300);
+        Thread.sleep(200);
     }
 
-    /** Gửi SMS qua cổng chỉ định */
+    /** Gửi SMS qua cổng chỉ định, trả về JSON string */
     public String sendSms(String portName, String phoneNumber, String text) {
         SerialPort port = openPort(portName);
-        StringBuilder result = new StringBuilder();
+        StringBuilder modemResp = new StringBuilder();
+        String status = "UNKNOWN";
+
         try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
             Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII);
 
             sendCmd(out, "AT+CMGF=1"); // text mode
             sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
 
-            Thread.sleep(500); // chờ modem trả '>'
+            Thread.sleep(500); // đợi modem trả '>'
             out.write(text.getBytes(StandardCharsets.US_ASCII));
             out.write(0x1A); // Ctrl+Z
             out.flush();
@@ -50,8 +52,15 @@ public class SmsService {
             while (System.currentTimeMillis() - start < 5000 && scanner.hasNextLine()) {
                 String line = scanner.nextLine().trim();
                 if (!line.isEmpty()) {
-                    result.append(line).append("\n");
-                    if (line.contains("OK") || line.contains("ERROR")) break;
+                    modemResp.append(line).append("\n");
+                    if (line.contains("OK")) {
+                        status = "OK";
+                        break;
+                    }
+                    if (line.contains("ERROR")) {
+                        status = "ERROR";
+                        break;
+                    }
                 }
             }
         } catch (Exception e) {
@@ -59,25 +68,42 @@ public class SmsService {
         } finally {
             port.closePort();
         }
-        return result.toString();
+
+        return "{\n" +
+                "  \"status\": \"" + status + "\",\n" +
+                "  \"port\": \"" + portName + "\",\n" +
+                "  \"phoneNumber\": \"" + phoneNumber + "\",\n" +
+                "  \"message\": \"" + text + "\",\n" +
+                "  \"modemResponse\": \"" + modemResp.toString().replace("\"", "\\\"").trim() + "\"\n" +
+                "}";
     }
 
-    /** Đọc toàn bộ SMS từ SIM */
+    /** Đọc toàn bộ SMS từ SIM, parse thành JSON list */
     public String readSms(String portName) {
         SerialPort port = openPort(portName);
-        StringBuilder result = new StringBuilder();
+        List<Map<String, String>> messages = new ArrayList<>();
+
         try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
             Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII);
 
             sendCmd(out, "AT+CMGF=1");        // text mode
             sendCmd(out, "AT+CSCS=\"GSM\""); // charset
-            sendCmd(out, "AT+CMGL=\"ALL\""); // đọc inbox
+            sendCmd(out, "AT+CMGL=\"ALL\""); // đọc tất cả SMS
 
+            String header = null;
             long start = System.currentTimeMillis();
             while (System.currentTimeMillis() - start < 5000 && scanner.hasNextLine()) {
                 String line = scanner.nextLine().trim();
-                if (!line.isEmpty()) {
-                    result.append(line).append("\n");
+                if (line.isEmpty()) continue;
+
+                if (line.startsWith("+CMGL:")) {
+                    // Bắt đầu 1 tin nhắn mới
+                    header = line;
+                } else if (header != null) {
+                    // Nội dung SMS nằm ngay sau header
+                    Map<String, String> sms = parseSms(header, line);
+                    messages.add(sms);
+                    header = null;
                 }
             }
         } catch (Exception e) {
@@ -85,6 +111,43 @@ public class SmsService {
         } finally {
             port.closePort();
         }
-        return result.toString();
+
+        // Convert sang JSON thủ công (có thể dùng Jackson)
+        StringBuilder json = new StringBuilder("[\n");
+        for (int i = 0; i < messages.size(); i++) {
+            Map<String, String> sms = messages.get(i);
+            json.append("  {\n");
+            for (Map.Entry<String, String> entry : sms.entrySet()) {
+                json.append("    \"").append(entry.getKey()).append("\": \"")
+                        .append(entry.getValue().replace("\"", "\\\"")).append("\",\n");
+            }
+            if (json.charAt(json.length() - 2) == ',') {
+                json.delete(json.length() - 2, json.length() - 1); // bỏ dấu , cuối
+            }
+            json.append("  }");
+            if (i < messages.size() - 1) json.append(",");
+            json.append("\n");
+        }
+        json.append("]");
+        return json.toString();
+    }
+
+    private Map<String, String> parseSms(String header, String content) {
+        // Ví dụ header: +CMGL: 1,"REC READ","+84901234567","","25/09/24,10:11:00+08"
+        Map<String, String> sms = new LinkedHashMap<>();
+        sms.put("header", header);
+        sms.put("content", content);
+
+        try {
+            String[] parts = header.split(",");
+            if (parts.length >= 2) {
+                sms.put("status", parts[1].replace("\"", "").trim());
+            }
+            if (parts.length >= 3) {
+                sms.put("sender", parts[2].replace("\"", "").trim());
+            }
+        } catch (Exception ignore) {}
+
+        return sms;
     }
 }
