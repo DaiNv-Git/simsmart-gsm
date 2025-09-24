@@ -20,7 +20,10 @@ public class SmsService {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);
         port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
-        if (!port.openPort()) throw new RuntimeException("Không thể mở cổng " + portName);
+        if (!port.openPort()) {
+            log.warn("⚠️ Không thể mở cổng {}", portName);
+            return null;
+        }
         return port;
     }
 
@@ -35,41 +38,76 @@ public class SmsService {
     private List<Map<String, String>> readByStatus(String portName, String status) {
         List<Map<String, String>> messages = new ArrayList<>();
         SerialPort port = openPort(portName);
+        if (port == null) return messages;
 
         try (OutputStream out = port.getOutputStream();
              InputStream in = port.getInputStream();
              Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
 
-            sendCmd(out, "AT+CMGF=1");        // text mode
-            sendCmd(out, "AT+CSCS=\"GSM\""); // charset
-            sendCmd(out, "AT+CPMS=\"MT\"");  // đọc cả SIM + modem
-            sendCmd(out, "AT+CMGL=\"" + status + "\"");
+            sendCmd(out, "AT+CMGF=1");          // text mode
+            sendCmd(out, "AT+CSCS=\"GSM\"");   // charset
+            sendCmd(out, "AT+CNMI=2,1,0,0,0"); // enable new SMS indication
 
-            String header = null;
-            long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < 8000 && scanner.hasNextLine()) {
-                String line = scanner.nextLine().trim();
-                if (line.isEmpty()) continue;
+            String[] memories = {"SM", "ME", "MT"};
+            for (String mem : memories) {
+                sendCmd(out, "AT+CPMS=\"" + mem + "\"");
+                sendCmd(out, "AT+CMGL=\"" + status + "\"");
 
-                if (line.startsWith("+CMGL:")) {
-                    header = line;
-                } else if (header != null) {
-                    Map<String, String> sms = new LinkedHashMap<>();
-                    sms.put("port", portName);
-                    sms.put("header", header);
-                    sms.put("content", line);
-                    messages.add(sms);
-                    header = null;
+                String header = null;
+                long start = System.currentTimeMillis();
+                while (System.currentTimeMillis() - start < 4000 && scanner.hasNextLine()) {
+                    String line = scanner.nextLine().trim();
+                    if (line.isEmpty()) continue;
+
+                    if (line.startsWith("+CMGL:")) {
+                        header = line;
+                    } else if (header != null) {
+                        Map<String, String> sms = new LinkedHashMap<>();
+                        sms.put("port", portName);
+                        sms.put("memory", mem);
+                        sms.put("header", header);
+                        sms.put("content", line);
+                        messages.add(sms);
+                        header = null;
+                    }
                 }
             }
         } catch (Exception e) {
             log.error("❌ Lỗi đọc SMS {} từ {}: {}", status, portName, e.getMessage());
         } finally {
-            try {
-                port.closePort();
-            } catch (Exception ignore) {}
+            try { port.closePort(); } catch (Exception ignore) {}
         }
         return messages;
+    }
+
+    // ====== Đọc RAW AT response cho debug ======
+    public String readRawAll(String portName) {
+        SerialPort port = openPort(portName);
+        if (port == null) return "[]";
+
+        StringBuilder raw = new StringBuilder();
+        try (OutputStream out = port.getOutputStream();
+             InputStream in = port.getInputStream();
+             Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
+
+            sendCmd(out, "AT+CMGF=1");
+            sendCmd(out, "AT+CSCS=\"GSM\"");
+            sendCmd(out, "AT+CPMS=\"MT\"");
+            sendCmd(out, "AT+CMGL=\"ALL\"");
+
+            long start = System.currentTimeMillis();
+            while (System.currentTimeMillis() - start < 6000 && scanner.hasNextLine()) {
+                String line = scanner.nextLine();
+                if (!line.trim().isEmpty()) {
+                    raw.append(line).append("\n");
+                }
+            }
+        } catch (Exception e) {
+            log.error("❌ Lỗi đọc RAW từ {}: {}", portName, e.getMessage());
+        } finally {
+            try { port.closePort(); } catch (Exception ignore) {}
+        }
+        return raw.toString();
     }
 
     // ====== Đọc SMS của tất cả port theo status (đa luồng) ======
