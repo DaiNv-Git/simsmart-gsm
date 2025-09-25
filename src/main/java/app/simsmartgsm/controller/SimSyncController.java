@@ -20,9 +20,8 @@ public class SimSyncController {
     /** Gọi API này để scan toàn bộ COM và resolve số cho SIM chưa biết */
     @PostMapping("/scan")
     public String scanAndResolve() throws Exception {
-        String deviceName = InetAddress.getLocalHost().getHostName();
-        simSyncService.syncAndResolve(deviceName);
-        return "✅ Scan & resolve chạy cho deviceName=" + deviceName;
+        simSyncService.syncAndResolve();
+        return "✅ Scan & resolve";
     }
 
     /** Xem toàn bộ SIM trong DB */

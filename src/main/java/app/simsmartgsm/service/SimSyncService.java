@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import java.net.InetAddress;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -19,6 +20,9 @@ import java.util.stream.Collectors;
 public class SimSyncService {
 
     private final SimRepository simRepository;
+
+    private static final int THREAD_POOL_SIZE = 8; // scan song song
+    private static final int AT_TIMEOUT_MS = 1000;
 
     /**
      * Luồng chính: scan tất cả COM -> lưu DB -> resolve số điện thoại cho SIM chưa có số.
@@ -54,52 +58,84 @@ public class SimSyncService {
         resolvePhoneNumbers(deviceName, unknown, receiver);
     }
 
-    private List<ScannedSim> scanAllPorts() {
-        List<ScannedSim> scanned = new ArrayList<>();
+    /**
+     * Scan tất cả cổng COM song song, chỉ nhận SIM nào mở port được và có phản hồi AT.
+     */
+    private List<ScannedSim> scanAllPorts() throws InterruptedException {
         SerialPort[] ports = SerialPort.getCommPorts();
         log.info("Tìm thấy {} cổng COM", ports.length);
 
+        ExecutorService pool = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
+        List<Future<ScannedSim>> futures = new ArrayList<>();
+
         for (SerialPort port : ports) {
-            String com = port.getSystemPortName();
-            port.setBaudRate(115200);
-            port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
+            futures.add(pool.submit(() -> scanOnePort(port)));
+        }
+        pool.shutdown();
+        pool.awaitTermination(1, TimeUnit.MINUTES);
 
-            if (!port.openPort()) {
-                log.warn("❌ Không mở được port {}", com);
-                continue;
-            }
-
-            try (AtCommandHelper helper = new AtCommandHelper(port)) {
-                helper.ping();
-
-                String ccid = helper.getCcid();
-                String imsi = helper.getImsi();
-                String phone = helper.getCnum();
-
-                ScannedSim s = new ScannedSim(com, ccid, imsi, phone, detectProvider(imsi));
-                scanned.add(s);
-
-                log.info("✅ Scan {} -> ccid={} imsi={} phone={}", com, ccid, imsi, phone);
-            } catch (Exception ex) {
-                log.warn("❌ Lỗi khi đọc port {}: {}", com, ex.getMessage());
-            } finally {
-                port.closePort(); // luôn đóng lại
-            }
+        List<ScannedSim> scanned = new ArrayList<>();
+        for (Future<ScannedSim> f : futures) {
+            try {
+                ScannedSim s = f.get();
+                if (s != null) scanned.add(s);
+            } catch (Exception ignored) {}
         }
         return scanned;
     }
 
+    /**
+     * Scan 1 port: mở cổng, gửi AT, lấy CCID/IMSI/CNUM.
+     */
+    private ScannedSim scanOnePort(SerialPort port) {
+        String com = port.getSystemPortName();
+        port.setBaudRate(115200);
+        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
 
+        if (!port.openPort()) {
+            log.debug("❌ Không mở được {}", com);
+            return null;
+        }
+
+        try (AtCommandHelper helper = new AtCommandHelper(port)) {
+            // test AT
+            String atResp = helper.sendAndRead("AT", AT_TIMEOUT_MS);
+            if (atResp == null || !atResp.contains("OK")) {
+                log.debug("❌ {} không phản hồi AT", com);
+                return null;
+            }
+
+            String ccid = helper.getCcid();
+            String imsi = helper.getImsi();
+            String phone = helper.getCnum();
+
+            log.info("✅ {} -> ccid={} imsi={} phone={}", com, ccid, imsi, phone);
+            return new ScannedSim(com, ccid, imsi, phone, detectProvider(imsi));
+        } catch (Exception ex) {
+            log.warn("❌ Lỗi khi scan {}: {}", com, ex.getMessage());
+            return null;
+        } finally {
+            port.closePort();
+        }
+    }
+
+    /**
+     * Lưu kết quả scan vào DB và mark replaced cho SIM active không còn xuất hiện.
+     */
     private void syncScannedToDb(String deviceName, List<ScannedSim> scanned) {
         for (ScannedSim ss : scanned) {
             if (ss.ccid == null) continue;
 
             Sim sim = simRepository.findByDeviceNameAndCcid(deviceName, ss.ccid)
-                    .orElse(Sim.builder().ccid(ss.ccid).deviceName(deviceName).comName(ss.comName).build());
+                    .orElse(Sim.builder()
+                            .ccid(ss.ccid)
+                            .deviceName(deviceName)
+                            .comName(ss.comName)
+                            .build());
 
             sim.setImsi(ss.imsi);
             sim.setComName(ss.comName);
-            sim.setPhoneNumber(ss.phoneNumber);
+            if (ss.phoneNumber != null) sim.setPhoneNumber(ss.phoneNumber);
             sim.setSimProvider(ss.simProvider);
             sim.setStatus("active");
             sim.setLastUpdated(Instant.now());
@@ -107,10 +143,16 @@ public class SimSyncService {
             simRepository.save(sim);
         }
 
-        // đánh dấu replaced cho sim mất
-        Set<String> scannedCcids = scanned.stream().map(s -> s.ccid).filter(Objects::nonNull).collect(Collectors.toSet());
+        // chỉ mark replaced cho SIM active nhưng không còn thấy
+        Set<String> scannedCcids = scanned.stream()
+                .map(s -> s.ccid)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
         simRepository.findByDeviceName(deviceName).forEach(db -> {
-            if (db.getCcid() != null && !scannedCcids.contains(db.getCcid())) {
+            if ("active".equals(db.getStatus())
+                    && db.getCcid() != null
+                    && !scannedCcids.contains(db.getCcid())) {
                 db.setStatus("replaced");
                 db.setLastUpdated(Instant.now());
                 simRepository.save(db);
@@ -119,6 +161,9 @@ public class SimSyncService {
         });
     }
 
+    /**
+     * Resolve số điện thoại cho SIM chưa biết bằng cách gửi SMS test đến receiver.
+     */
     private void resolvePhoneNumbers(String deviceName, List<ScannedSim> unknown, ScannedSim receiver) {
         for (ScannedSim sim : unknown) {
             String token = "CHECK-" + UUID.randomUUID().toString().substring(0, 6);
@@ -142,18 +187,34 @@ public class SimSyncService {
     }
 
     private boolean sendSmsFromPort(String fromCom, String toNumber, String token) {
-        try (AtCommandHelper helper = new AtCommandHelper(SerialPort.getCommPort(fromCom))) {
+        SerialPort port = SerialPort.getCommPort(fromCom);
+        port.setBaudRate(115200);
+        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
+        if (!port.openPort()) return false;
+
+        try (AtCommandHelper helper = new AtCommandHelper(port)) {
             return helper.sendTextSms(toNumber, token, java.time.Duration.ofSeconds(15));
         } catch (Exception e) {
             log.error("Gửi SMS lỗi từ {}: {}", fromCom, e.getMessage());
             return false;
+        } finally {
+            port.closePort();
         }
     }
 
     private String pollReceiverForToken(String receiverCom, String token, long timeoutMs) {
         long start = System.currentTimeMillis();
         while (System.currentTimeMillis() - start < timeoutMs) {
-            try (AtCommandHelper helper = new AtCommandHelper(SerialPort.getCommPort(receiverCom))) {
+            SerialPort port = SerialPort.getCommPort(receiverCom);
+            port.setBaudRate(115200);
+            port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
+
+            if (!port.openPort()) {
+                try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
+                continue;
+            }
+
+            try (AtCommandHelper helper = new AtCommandHelper(port)) {
                 var unread = helper.listUnreadSmsText(3000);
                 for (var sms : unread) {
                     if (sms.body != null && sms.body.contains(token)) {
@@ -162,7 +223,10 @@ public class SimSyncService {
                 }
             } catch (Exception e) {
                 log.error("Đọc inbox receiver {} lỗi: {}", receiverCom, e.getMessage());
+            } finally {
+                port.closePort();
             }
+
             try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
         }
         return null;
