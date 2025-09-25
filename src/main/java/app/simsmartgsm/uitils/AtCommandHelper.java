@@ -1,18 +1,17 @@
 package app.simsmartgsm.uitils;
 
 import com.fazecast.jSerialComm.SerialPort;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Helper để gửi AT command và đọc response ổn định.
- * - flush input trước khi gửi
- * - đọc liên tục trong vòng timeout tổng
- * - hỗ trợ retry
- * - hỗ trợ gửi SMS (AT+CMGS với Ctrl+Z)
+ * Helper gửi AT và đọc response ổn định cho modem.
+ * - Flush input trước khi gửi
+ * - Vòng đọc mềm trong total timeout
+ * - Hỗ trợ kiểm tra prompt '>' (CMGS), gửi Ctrl+Z
+ * - Có hàm readResponse tách biệt, writeRaw bytes
  */
 public class AtCommandHelper implements AutoCloseable {
 
@@ -26,152 +25,109 @@ public class AtCommandHelper implements AutoCloseable {
         this.out = port.getOutputStream();
     }
 
-    public String sendCommand(String command, int totalTimeoutMs, int retry) throws IOException, InterruptedException {
+    /** Gửi 1 lệnh AT, chờ đến khi gặp OK/ERROR/'>', hoặc hết timeout. */
+    public String sendCommand(String command, int totalTimeoutMs, int retry)
+            throws IOException, InterruptedException {
         if (!port.isOpen()) {
             throw new IOException("Port is not open: " + port.getSystemPortName());
         }
-
         flushInput();
-
-        int maxAttempts = Math.max(1, retry + 1);
         IOException lastIo = null;
+        int maxAttempts = Math.max(1, retry + 1);
 
         for (int attempt = 0; attempt < maxAttempts; attempt++) {
             try {
-                String at = command + "\r";
-                out.write(at.getBytes(StandardCharsets.ISO_8859_1));
+                out.write((command + "\r").getBytes(StandardCharsets.ISO_8859_1));
                 out.flush();
-
-                Thread.sleep(150);
+                Thread.sleep(120); // grace cho modem
 
                 StringBuilder sb = new StringBuilder();
                 long start = System.currentTimeMillis();
-                byte[] buffer = new byte[1024];
+                byte[] buf = new byte[1024];
 
                 while (System.currentTimeMillis() - start < totalTimeoutMs) {
                     int available = in.available();
                     if (available > 0) {
-                        int len = in.read(buffer, 0, Math.min(buffer.length, available));
-                        if (len > 0) {
-                            sb.append(new String(buffer, 0, len, StandardCharsets.ISO_8859_1));
-                        }
+                        int len = in.read(buf, 0, Math.min(buf.length, available));
+                        if (len > 0) sb.append(new String(buf, 0, len, StandardCharsets.ISO_8859_1));
                         String s = sb.toString();
-                        if (s.contains("OK") || s.contains("ERROR") || s.contains(">")) {
-                            break;
-                        }
+                        if (s.contains("OK") || s.contains("ERROR") || s.contains(">")) break;
                     } else {
-                        Thread.sleep(50);
+                        Thread.sleep(40);
                     }
                 }
-
-                String response = sb.toString().trim();
-                if (!response.isEmpty()) {
-                    return response;
-                }
-
+                String resp = sb.toString().trim();
+                if (!resp.isEmpty()) return resp;
             } catch (IOException ioe) {
                 lastIo = ioe;
             }
-
-            if (attempt < maxAttempts - 1) {
-                Thread.sleep(200);
-            }
+            if (attempt < maxAttempts - 1) Thread.sleep(160);
         }
-
         if (lastIo != null) throw lastIo;
         return "";
     }
 
-    /**
-     * Gửi dữ liệu raw (vd: SMS + Ctrl+Z).
-     */
-    public void sendRaw(String raw) throws IOException {
-        if (!port.isOpen()) {
-            throw new IOException("Port is not open: " + port.getSystemPortName());
-        }
-        out.write(raw.getBytes(StandardCharsets.ISO_8859_1));
-        out.flush();
-    }
-
-    /**
-     * Gửi dữ liệu raw kèm Ctrl+Z (0x1A) để kết thúc SMS.
-     */
-    public void sendSmsContent(String text) throws IOException {
-        if (!port.isOpen()) {
-            throw new IOException("Port is not open: " + port.getSystemPortName());
-        }
-        out.write(text.getBytes(StandardCharsets.ISO_8859_1));
-        out.write(0x1A); // Ctrl+Z
-        out.flush();
-    }
-
-    /**
-     * Đọc response trong khoảng timeoutMs.
-     */
+    /** Đọc response độc lập (sau khi gửi nội dung SMS + Ctrl-Z). */
     public String readResponse(int timeoutMs) throws IOException {
         StringBuilder sb = new StringBuilder();
         long start = System.currentTimeMillis();
-        byte[] buffer = new byte[1024];
+        byte[] buf = new byte[1024];
 
         while (System.currentTimeMillis() - start < timeoutMs) {
             int available = in.available();
             if (available > 0) {
-                int len = in.read(buffer, 0, Math.min(buffer.length, available));
-                if (len > 0) {
-                    sb.append(new String(buffer, 0, len, StandardCharsets.ISO_8859_1));
-                }
+                int len = in.read(buf, 0, Math.min(buf.length, available));
+                if (len > 0) sb.append(new String(buf, 0, len, StandardCharsets.ISO_8859_1));
                 String s = sb.toString();
-                if (s.contains("OK") || s.contains("ERROR") || s.contains("+CMGS")) {
-                    break;
-                }
+                if (s.contains("OK") || s.contains("ERROR") || s.contains("+CMGS")) break;
             } else {
-                try {
-                    Thread.sleep(50);
-                } catch (InterruptedException ignored) {}
+                try { Thread.sleep(50); } catch (InterruptedException ignored) {}
             }
         }
-
         return sb.toString().trim();
     }
 
-    private void flushInput() {
-        try {
-            while (in.available() > 0) {
-                in.read(new byte[in.available()]);
-            }
-        } catch (IOException ignored) {}
-    }
-
-    @Override
-    public void close() {
-        try { in.close(); } catch (Exception ignored) {}
-        try { out.close(); } catch (Exception ignored) {}
-    }
-    // Ghi raw bytes rồi flush (dùng sau khi modem trả dấu '>')
+    /** Ghi chuỗi raw (không tự thêm CR). */
     public void writeRaw(byte[] data) throws IOException {
-        if (!port.isOpen()) {
-            throw new IOException("Port is not open: " + port.getSystemPortName());
-        }
+        ensureOpen();
         out.write(data);
         out.flush();
     }
 
-    // Overload kèm offset/length (nếu cần)
+    /** Overload ghi raw với offset/length. */
     public void writeRaw(byte[] data, int off, int len) throws IOException {
-        if (!port.isOpen()) {
-            throw new IOException("Port is not open: " + port.getSystemPortName());
-        }
+        ensureOpen();
         out.write(data, off, len);
         out.flush();
     }
 
-    // Gửi Ctrl+Z để kết thúc SMS
+    /** Gửi Ctrl+Z (0x1A) để kết thúc nội dung SMS. */
     public void writeCtrlZ() throws IOException {
-        if (!port.isOpen()) {
-            throw new IOException("Port is not open: " + port.getSystemPortName());
-        }
-        out.write(0x1A); // Ctrl+Z
+        ensureOpen();
+        out.write(0x1A);
         out.flush();
     }
 
+    /** Gửi nội dung SMS + Ctrl-Z. */
+    public void sendSmsContent(String text) throws IOException {
+        ensureOpen();
+        out.write(text.getBytes(StandardCharsets.ISO_8859_1));
+        out.write(0x1A);
+        out.flush();
+    }
+
+    private void flushInput() {
+        try {
+            while (in.available() > 0) in.read(new byte[in.available()]);
+        } catch (IOException ignored) {}
+    }
+
+    private void ensureOpen() throws IOException {
+        if (!port.isOpen()) throw new IOException("Port is not open: " + port.getSystemPortName());
+    }
+
+    @Override public void close() {
+        try { in.close(); } catch (Exception ignored) {}
+        try { out.close(); } catch (Exception ignored) {}
+    }
 }

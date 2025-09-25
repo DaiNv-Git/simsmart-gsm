@@ -1,13 +1,11 @@
 package app.simsmartgsm.service;
 
-
 import app.simsmartgsm.entity.Sim;
-import org.springframework.stereotype.Service;
 import app.simsmartgsm.repository.SimRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.Optional;
+import org.springframework.stereotype.Service;
+import java.util.Date;
 
 @Service
 public class IncomingSmsProcessor {
@@ -20,31 +18,53 @@ public class IncomingSmsProcessor {
     }
 
     /**
-     * Called by your external SMS gateway when it receives an inbound SMS.
-     * - fromNumber is the originating MSISDN (the SIM we need to bind)
-     * - body can optionally carry a token if you used token in message body.
-     *
-     * This method will attempt to find a Sim with matching CCID or with some pending marker.
-     * For simplicity we just search for sims with null phoneNumber and ccid present and set phoneNumber to fromNumber.
+     * fromNumber: số thật của SIM gửi đi (SIM cần xác thực)
+     * body: nội dung tin — kỳ vọng có token "SIM_VERIF:<token>"
      */
-    public void processInboundSms(String fromNumber, String body) {
-        log.info("Inbound SMS from {} body={}", fromNumber, body);
-
-        // Try to find SIM by some logic: for example, find first Sim without phoneNumber
-        // In production you'll likely have a pending token map: token -> ccid
-        Optional<Sim> candidate = simRepository.findAll().stream()
-                .filter(s -> (s.getPhoneNumber() == null || s.getPhoneNumber().isEmpty()))
-                .findFirst();
-
-        if (candidate.isPresent()) {
-            Sim s = candidate.get();
-            s.setPhoneNumber(fromNumber);
-            s.setStatus("active");
-            s.setLastUpdated(new java.util.Date().toInstant());
-            simRepository.save(s);
-            log.info("Assigned phone {} to sim id={} ccid={}", fromNumber, s.getId(), s.getCcid());
-        } else {
-            log.warn("No candidate SIM found to assign incoming number {}", fromNumber);
+    public void processInboundVerification(String fromNumber, String body) {
+        if (fromNumber == null || fromNumber.isBlank() || body == null) {
+            log.warn("Inbound verification missing fields: from='{}' body='{}'", fromNumber, body);
+            return;
         }
+        String token = extractToken(body); // ví dụ parse SIM_VERIF:xxxx
+        if (token == null) {
+            log.warn("No verification token found in inbound body='{}'", body);
+            return;
+        }
+
+        // Tìm SIM pending theo content == token
+        Sim pending = simRepository.findAll().stream()
+                .filter(s -> "PENDING_VERIFICATION".equalsIgnoreCase(s.getStatus()))
+                .filter(s -> token.equals(s.getContent()))
+                .findFirst()
+                .orElse(null);
+
+        if (pending == null) {
+            log.warn("No pending SIM matches token='{}'", token);
+            return;
+        }
+
+        // Gán phoneNumber và kích hoạt
+        pending.setPhoneNumber(fromNumber);
+        pending.setStatus("active");
+        pending.setLastUpdated(new Date().toInstant());
+        simRepository.save(pending);
+
+        log.info("Verified SIM ccid={} phone={}", pending.getCcid(), fromNumber);
+
+        // (Tùy chọn) giải phóng bất kỳ SIM receiver nào đang 'busy'…
+        // Nếu bạn đánh dấu receiver busy bằng token, có thể clear ở đây.
+    }
+
+    private String extractToken(String body) {
+        // Giản lược: tìm "SIM_VERIF:" + 8 ký tự
+        // Bạn có thể dùng regex linh hoạt hơn.
+        int idx = body.indexOf("SIM_VERIF:");
+        if (idx < 0) return null;
+        String tail = body.substring(idx + "SIM_VERIF:".length()).trim();
+        if (tail.isEmpty()) return null;
+        // lấy đến khoảng trắng tiếp theo nếu có
+        int sp = tail.indexOf(' ');
+        return sp > 0 ? tail.substring(0, sp) : tail;
     }
 }
