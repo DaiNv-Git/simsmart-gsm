@@ -61,8 +61,17 @@ public class SimSyncService {
 
         for (SerialPort port : ports) {
             String com = port.getSystemPortName();
+            port.setBaudRate(115200);
+            port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
+
+            if (!port.openPort()) {
+                log.warn("❌ Không mở được port {}", com);
+                continue;
+            }
+
             try (AtCommandHelper helper = new AtCommandHelper(port)) {
                 helper.ping();
+
                 String ccid = helper.getCcid();
                 String imsi = helper.getImsi();
                 String phone = helper.getCnum();
@@ -72,11 +81,14 @@ public class SimSyncService {
 
                 log.info("✅ Scan {} -> ccid={} imsi={} phone={}", com, ccid, imsi, phone);
             } catch (Exception ex) {
-                log.warn("❌ Lỗi scan port {}: {}", com, ex.getMessage());
+                log.warn("❌ Lỗi khi đọc port {}: {}", com, ex.getMessage());
+            } finally {
+                port.closePort(); // luôn đóng lại
             }
         }
         return scanned;
     }
+
 
     private void syncScannedToDb(String deviceName, List<ScannedSim> scanned) {
         for (ScannedSim ss : scanned) {
