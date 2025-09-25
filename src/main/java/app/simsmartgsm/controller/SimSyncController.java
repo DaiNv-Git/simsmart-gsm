@@ -6,11 +6,9 @@ import app.simsmartgsm.service.SimSyncService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.InetAddress;
 import java.util.List;
 
-/**
- * Controller test quét và đồng bộ SIM từ GSM device.
- */
 @RestController
 @RequestMapping("/api/sim-sync")
 @RequiredArgsConstructor
@@ -19,30 +17,17 @@ public class SimSyncController {
     private final SimSyncService simSyncService;
     private final SimRepository simRepository;
 
-    /**
-     * Trigger quét tất cả cổng COM và đồng bộ DB.
-     * @param deviceName tên máy (lấy từ AT+CGMI hoặc config)
-     */
+    /** Gọi API này để scan toàn bộ COM và resolve số cho SIM chưa biết */
     @PostMapping("/scan")
-    public String scanAndSync() {
-        simSyncService.syncAndResolvePhoneNumbers();
-        return "✅ Scan & sync started for deviceName=";
+    public String scanAndResolve() throws Exception {
+        String deviceName = InetAddress.getLocalHost().getHostName();
+        simSyncService.syncAndResolve(deviceName);
+        return "✅ Scan & resolve chạy cho deviceName=" + deviceName;
     }
 
-    /**
-     * Trả về toàn bộ SIM hiện tại trong DB.
-     */
+    /** Xem toàn bộ SIM trong DB */
     @GetMapping("/list")
     public List<Sim> listAll() {
         return simRepository.findAll();
     }
-
-    /**
-     * Lấy SIM theo deviceName.
-     */
-    @GetMapping("/list/{deviceName}")
-    public List<Sim> listByDevice(@PathVariable String deviceName) {
-        return simRepository.findByDeviceName(deviceName);
-    }
 }
-
