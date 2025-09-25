@@ -1,7 +1,6 @@
 package app.simsmartgsm.scheduled;
 
 import app.simsmartgsm.dto.request.SimRequest;
-import app.simsmartgsm.service.PortScannerService;
 import app.simsmartgsm.service.SimService;
 import app.simsmartgsm.uitils.HostUtils;
 import org.slf4j.Logger;

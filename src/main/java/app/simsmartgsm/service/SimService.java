@@ -19,13 +19,7 @@ public class SimService {
         this.restTemplate = restTemplate;
     }
 
-    /**
-     * Gửi danh sách SIM (port_data) sang VPS server
-     *
-     * @param vpsId   địa chỉ VPS hoặc IP
-     * @param payload SimRequest (deviceName + portData)
-     * @return chuỗi kết quả
-     */
+
     public String sendSimList(String vpsId, SimRequest payload) {
         String url = String.format("http://%s:9090/api/simlist", vpsId);
 
