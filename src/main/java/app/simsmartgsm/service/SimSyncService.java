@@ -123,11 +123,21 @@ public class SimSyncService {
      * Lưu kết quả scan vào DB và mark replaced cho SIM active không còn xuất hiện.
      */
     private void syncScannedToDb(String deviceName, List<ScannedSim> scanned) {
+        // 1. Lấy toàn bộ SIM hiện có trong DB (1 query duy nhất)
+        List<Sim> dbSims = simRepository.findByDeviceName(deviceName);
+        Map<String, Sim> dbMap = dbSims.stream()
+                .filter(s -> s.getCcid() != null)
+                .collect(Collectors.toMap(Sim::getCcid, s -> s, (a, b) -> a));
+
+        Set<String> scannedCcids = new HashSet<>();
+        List<Sim> toSave = new ArrayList<>();
+
         for (ScannedSim ss : scanned) {
             if (ss.ccid == null) continue;
+            scannedCcids.add(ss.ccid);
 
-            Sim sim = simRepository.findByDeviceNameAndCcid(deviceName, ss.ccid)
-                    .orElse(Sim.builder()
+            Sim sim = dbMap.getOrDefault(ss.ccid,
+                    Sim.builder()
                             .ccid(ss.ccid)
                             .deviceName(deviceName)
                             .comName(ss.comName)
@@ -140,25 +150,23 @@ public class SimSyncService {
             sim.setStatus("active");
             sim.setLastUpdated(Instant.now());
 
-            simRepository.save(sim);
+            toSave.add(sim);
         }
 
-        // chỉ mark replaced cho SIM active nhưng không còn thấy
-        Set<String> scannedCcids = scanned.stream()
-                .map(s -> s.ccid)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toSet());
-
-        simRepository.findByDeviceName(deviceName).forEach(db -> {
+        for (Sim db : dbSims) {
             if ("active".equals(db.getStatus())
                     && db.getCcid() != null
                     && !scannedCcids.contains(db.getCcid())) {
                 db.setStatus("replaced");
                 db.setLastUpdated(Instant.now());
-                simRepository.save(db);
+                toSave.add(db);
                 log.info("⚠️ SIM {} (com={}) đánh dấu replaced", db.getCcid(), db.getComName());
             }
-        });
+        }
+
+        if (!toSave.isEmpty()) {
+            simRepository.saveAll(toSave);
+        }
     }
 
 
