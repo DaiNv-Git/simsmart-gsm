@@ -6,6 +6,7 @@ import app.simsmartgsm.uitils.AtCommandHelper;
 import com.fazecast.jSerialComm.SerialPort;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.net.InetAddress;
@@ -27,6 +28,7 @@ public class SimSyncService {
     /**
      * Luồng chính: scan tất cả COM -> lưu DB -> resolve số điện thoại cho SIM chưa có số.
      */
+    @Scheduled(fixedRate = 900_000)
     public void syncAndResolve() throws Exception {
         String deviceName = InetAddress.getLocalHost().getHostName();
         log.info("=== BẮT ĐẦU SCAN cho deviceName={} ===", deviceName);
@@ -296,6 +298,113 @@ public class SimSyncService {
         if (imsi.startsWith("45204") || imsi.startsWith("45205")) return "Viettel (VN)";
         return "Unknown";
     }
+
+    @Scheduled(fixedRate = 60_000) // 1 phút
+    public void scheduledMonitorActivePorts() {
+        try {
+            log.info("🕒 Scheduled HEALTH CHECK running...");
+            monitorActivePorts();
+        } catch (Exception e) {
+            log.error("❌ Lỗi khi chạy health check: {}", e.getMessage(), e);
+        }
+    }
+
+    private void monitorActivePorts() {
+        List<Sim> activeSims = simRepository.findByStatus("active");
+        List<Sim> toSave = new ArrayList<>();
+
+        for (Sim sim : activeSims) {
+            boolean alive = pingSimPort(sim.getComName());
+
+            if (!alive) {
+                sim.setMissCount(sim.getMissCount() + 1);
+                if (sim.getMissCount() >= 3) {
+                    sim.setStatus("unhealthy");
+                    log.warn("⚠️ SIM {} (com={}) mark unhealthy sau {} lần fail",
+                            sim.getCcid(), sim.getComName(), sim.getMissCount());
+                }
+            } else {
+                // ✅ Khi còn alive, kiểm tra CCID có thay đổi không
+                checkSimIdentity(sim);
+
+                if ("unhealthy".equals(sim.getStatus())) {
+                    log.info("♻️ SIM {} (com={}) khôi phục từ unhealthy -> active",
+                            sim.getCcid(), sim.getComName());
+                }
+                sim.setMissCount(0);
+                sim.setStatus("active");
+            }
+            sim.setLastUpdated(Instant.now());
+            toSave.add(sim);
+        }
+
+        if (!toSave.isEmpty()) {
+            simRepository.saveAll(toSave);
+        }
+    }
+
+    private boolean pingSimPort(String com) {
+        SerialPort port = SerialPort.getCommPort(com);
+        port.setBaudRate(115200);
+        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 1000, 1000);
+
+        if (!port.openPort()) return false;
+
+        try (AtCommandHelper helper = new AtCommandHelper(port)) {
+            String resp = helper.sendAndRead("AT", AT_TIMEOUT_MS);
+            return resp != null && resp.contains("OK");
+        } catch (Exception e) {
+            return false;
+        } finally {
+            port.closePort();
+        }
+    }
+
+
+    private void logScanResult(String deviceName, List<ScannedSim> scanned) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n=== Scan Result for ").append(deviceName).append(" ===\n");
+        sb.append(String.format("%-8s %-8s %-15s %-15s %-20s %-10s\n",
+                "COM", "Status", "SIM Provider", "Phone Number", "CCID", "Content"));
+
+        for (ScannedSim s : scanned) {
+            sb.append(String.format("%-8s %-8s %-15s %-15s %-20s %-10s\n",
+                    s.comName,
+                    (s.ccid == null ? "ERROR" : "SUCCESS"),
+                    (s.simProvider != null ? s.simProvider : ""),
+                    (s.phoneNumber != null ? s.phoneNumber : ""),
+                    (s.ccid != null ? s.ccid : ""),
+                    (s.ccid == null ? "TIMEOUT" : "Registered")));
+        }
+
+        log.info(sb.toString());
+    }
+
+    private boolean checkSimIdentity(Sim sim) {
+        SerialPort port = SerialPort.getCommPort(sim.getComName());
+        port.setBaudRate(115200);
+        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 1500, 1500);
+
+        if (!port.openPort()) return false;
+
+        try (AtCommandHelper helper = new AtCommandHelper(port)) {
+            String ccid = helper.getCcid();
+            if (ccid != null && !ccid.equals(sim.getCcid())) {
+                log.info("🔄 SIM changed on com={} oldCCID={} newCCID={}",
+                        sim.getComName(), sim.getCcid(), ccid);
+                sim.setCcid(ccid);
+                sim.setStatus("new"); // hoặc "active" tuỳ policy
+                sim.setLastUpdated(Instant.now());
+                simRepository.save(sim);
+            }
+            return true;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            port.closePort();
+        }
+    }
+
 
     private record ScannedSim(String comName, String ccid, String imsi, String phoneNumber, String simProvider) {}
 }
