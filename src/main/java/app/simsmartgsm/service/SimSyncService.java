@@ -256,45 +256,56 @@ public class SimSyncService {
         // 2. Đọc inbox từ receiver duy nhất
         readAllTokensFromReceiver(deviceName, receiver.comName, tokenMap, 20_000);
     }
-
     private void readAllTokensFromReceiver(String deviceName, String receiverCom,
                                            Map<String, ScannedSim> tokenMap, long timeoutMs) {
         long start = System.currentTimeMillis();
         Map<String, String> resolved = new HashMap<>();
 
-        while (System.currentTimeMillis() - start < timeoutMs && resolved.size() < tokenMap.size()) {
-            SerialPort port = SerialPort.getCommPort(receiverCom);
-            port.setBaudRate(115200);
+        ReentrantLock lock = portLocks.computeIfAbsent(receiverCom, k -> new ReentrantLock());
+        if (!tryLock(lock, 2000)) {
+            log.warn("⏭️ Không lấy được lock cho receiver {}", receiverCom);
+            return;
+        }
+
+        SerialPort port = SerialPort.getCommPort(receiverCom);
+        try {
+            port.setBaudRate(BAUD);
             port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
 
             if (!port.openPort()) {
-                try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
-                continue;
+                log.error("❌ Không mở được receiver {}", receiverCom);
+                return;
             }
 
             try (AtCommandHelper helper = new AtCommandHelper(port)) {
-                var unread = helper.listUnreadSmsText(3000);
-                for (var sms : unread) {
-                    for (var entry : tokenMap.entrySet()) {
-                        if (sms.body != null && sms.body.contains(entry.getKey())) {
-                            ScannedSim sim = entry.getValue();
-                            resolved.put(sim.ccid, sms.sender);
+                while (System.currentTimeMillis() - start < timeoutMs
+                        && resolved.size() < tokenMap.size()) {
 
-                            // Update DB ngay
-                            updateDb(deviceName, sim, sms.sender);
-                            log.info("✅ Resolve SIM ccid={} com={} phone={}", sim.ccid, sim.comName, sms.sender);
+                    var unread = helper.listUnreadSmsText(3000);
+                    for (var sms : unread) {
+                        for (var entry : tokenMap.entrySet()) {
+                            if (sms.body != null && sms.body.contains(entry.getKey())) {
+                                ScannedSim sim = entry.getValue();
+                                if (!resolved.containsKey(sim.ccid)) {
+                                    resolved.put(sim.ccid, sms.sender);
+                                    updateDb(deviceName, sim, sms.sender);
+                                    log.info("✅ Resolve SIM ccid={} com={} phone={}",
+                                            sim.ccid, sim.comName, sms.sender);
+                                }
+                            }
                         }
                     }
+                    Thread.sleep(2000);
                 }
-            } catch (Exception e) {
-                log.error("❌ Đọc inbox từ {} lỗi: {}", receiverCom, e.getMessage());
-            } finally {
-                port.closePort();
             }
-
-            try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
+        } catch (Exception e) {
+            log.error("❌ Lỗi khi đọc receiver {}: {}", receiverCom, e.getMessage());
+        } finally {
+            if (port.isOpen()) port.closePort();
+            lock.unlock();
         }
     }
+
     private void updateDb(String deviceName, ScannedSim sim, String phoneNumber) {
         Sim dbSim = simRepository.findByDeviceNameAndCcid(deviceName, sim.ccid)
                 .orElse(Sim.builder()
