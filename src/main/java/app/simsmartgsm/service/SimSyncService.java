@@ -46,7 +46,8 @@ public class SimSyncService {
     }
 
 
-    public void syncAndResolvePhoneNumbers(String deviceName) {
+    public void syncAndResolvePhoneNumbers() {
+        String deviceName =getDeviceName();
         log.info("Start sync for device={}", deviceName);
 
         List<ScannedSim> scanned = scanAllPorts(deviceName);
