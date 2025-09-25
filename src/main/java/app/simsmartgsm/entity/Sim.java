@@ -55,6 +55,8 @@ public class Sim {
     /** Thời điểm cập nhật cuối cùng */
     private Instant lastUpdated;
 
+    private int missCount;
+
     /** Ngày SIM được kích hoạt */
     private Instant activeDate;
 }

@@ -123,7 +123,6 @@ public class SimSyncService {
      * Lưu kết quả scan vào DB và mark replaced cho SIM active không còn xuất hiện.
      */
     private void syncScannedToDb(String deviceName, List<ScannedSim> scanned) {
-        // 1. Lấy toàn bộ SIM của deviceName (1 query duy nhất)
         List<Sim> dbSims = simRepository.findByDeviceName(deviceName);
         Map<String, Sim> dbMap = dbSims.stream()
                 .filter(s -> s.getCcid() != null)
@@ -132,7 +131,7 @@ public class SimSyncService {
         Set<String> scannedCcids = new HashSet<>();
         List<Sim> toSave = new ArrayList<>();
 
-        // 2. Xử lý SIM quét được
+        // SIM scan được
         for (ScannedSim ss : scanned) {
             if (ss.ccid == null) continue;
             scannedCcids.add(ss.ccid);
@@ -142,17 +141,13 @@ public class SimSyncService {
                             .ccid(ss.ccid)
                             .deviceName(deviceName)
                             .comName(ss.comName)
-                            .status("new") // nếu chưa có thì đánh là new
+                            .missCount(0)
+                            .status("new")
                             .build());
 
-            // Nếu SIM từng bị replaced → khôi phục lại thành active
-            if ("replaced".equals(sim.getStatus())) {
-                log.info("♻️ SIM ccid={} com={} được khôi phục từ replaced -> active", ss.ccid, ss.comName);
-                sim.setStatus("active");
-            } else {
-                sim.setStatus("active");
-            }
-
+            // reset missCount nếu tìm thấy
+            sim.setMissCount(0);
+            sim.setStatus("active");
             sim.setImsi(ss.imsi);
             sim.setComName(ss.comName);
             if (ss.phoneNumber != null) sim.setPhoneNumber(ss.phoneNumber);
@@ -162,24 +157,29 @@ public class SimSyncService {
             toSave.add(sim);
         }
 
-        // 3. Xử lý SIM trong DB mà không còn thấy trong scan
+        // SIM không thấy trong scan
         for (Sim db : dbSims) {
             if (db.getCcid() != null && !scannedCcids.contains(db.getCcid())) {
-                if ("active".equals(db.getStatus())) {
+                db.setMissCount(db.getMissCount() + 1);
+
+                if (db.getMissCount() >= 3 && "active".equals(db.getStatus())) {
                     db.setStatus("replaced");
-                    db.setLastUpdated(Instant.now());
-                    toSave.add(db);
-                    log.info("⚠️ SIM {} (com={}) đánh dấu replaced", db.getCcid(), db.getComName());
+                    log.info("⚠️ SIM {} (com={}) bị đánh replaced sau {} lần không thấy",
+                            db.getCcid(), db.getComName(), db.getMissCount());
+                } else {
+                    log.debug("⏳ SIM {} (com={}) chưa thấy lần {}",
+                            db.getCcid(), db.getComName(), db.getMissCount());
                 }
-                // nếu đã replaced rồi thì giữ nguyên, không update thêm
+                db.setLastUpdated(Instant.now());
+                toSave.add(db);
             }
         }
 
-        // 4. Save tất cả 1 lần
         if (!toSave.isEmpty()) {
             simRepository.saveAll(toSave);
         }
     }
+
 
     private void resolvePhoneNumbers(String deviceName, List<ScannedSim> unknown, ScannedSim receiver) {
         // Load toàn bộ SIM của deviceName một lần
