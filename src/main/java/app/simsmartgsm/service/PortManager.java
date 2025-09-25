@@ -14,76 +14,66 @@ import java.util.function.Function;
 @Component
 @Slf4j
 public class PortManager {
-    // Mỗi COM có 1 lock + 1 SerialPort cache
     private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
-    private final Map<String, SerialPort> portCache = new ConcurrentHashMap<>();
 
     /**
-     * Thao tác an toàn trên 1 cổng COM
+     * Mở port an toàn với lock và thực thi task.
+     * Tự động cấu hình modem về text mode khi gửi SMS.
      */
     public <T> T withPort(String com, Function<AtCommandHelper, T> task, long timeoutMs) {
         ReentrantLock lock = locks.computeIfAbsent(com, k -> new ReentrantLock());
         boolean acquired = false;
+        SerialPort port = null;
 
         try {
             acquired = lock.tryLock(timeoutMs, TimeUnit.MILLISECONDS);
             if (!acquired) {
-                log.debug("⏭️ Bỏ qua {} (lock bận)", com);
+                log.warn("⏳ Không lấy được lock cho {}", com);
                 return null;
             }
 
-            SerialPort port = portCache.computeIfAbsent(com, this::openPortSafely);
-            if (port == null || !port.isOpen()) {
-                log.error("❌ Không mở được port {}", com);
-                return null;
+            port = SerialPort.getCommPort(com);
+            port.setBaudRate(115200);
+            port.setComPortTimeouts(
+                    SerialPort.TIMEOUT_READ_SEMI_BLOCKING,
+                    2000,
+                    2000
+            );
+
+            if (!port.openPort()) {
+                throw new RuntimeException("❌ Không thể mở cổng " + com);
             }
 
             try (AtCommandHelper helper = new AtCommandHelper(port)) {
+                // --- chuẩn bị modem ---
+                helper.flushInput();
+                log.debug("[{}] >> AT", com);
+                helper.sendAndRead("AT", 2000);
+
+                log.debug("[{}] >> AT+CMGF=1 (TEXT mode)", com);
+                helper.sendAndRead("AT+CMGF=1", 2000);
+
+                log.debug("[{}] >> AT+CSCS=\"GSM\"", com);
+                helper.sendAndRead("AT+CSCS=\"GSM\"", 2000);
+
+                log.debug("[{}] >> AT+CSMP=17,167,0,0", com);
+                helper.sendAndRead("AT+CSMP=17,167,0,0", 2000);
+
+                // --- chạy logic chính ---
                 return task.apply(helper);
+            } finally {
+                if (port.isOpen()) {
+                    port.closePort();
+                }
             }
 
         } catch (Exception e) {
             log.error("❌ Lỗi thao tác với {}: {}", com, e.getMessage());
             return null;
         } finally {
-            if (acquired) lock.unlock();
-        }
-    }
-
-    /**
-     * Mở port 1 lần và cache lại
-     */
-    private SerialPort openPortSafely(String com) {
-        try {
-            SerialPort port = SerialPort.getCommPort(com);
-            port.setBaudRate(115200);
-            port.setComPortTimeouts(
-                    SerialPort.TIMEOUT_READ_SEMI_BLOCKING,
-                    2000, 2000
-            );
-
-            if (!port.openPort()) {
-                log.error("❌ Không thể mở cổng {}", com);
-                return null;
+            if (acquired) {
+                lock.unlock();
             }
-            log.info("✅ Đã mở port {}", com);
-            return port;
-        } catch (Exception e) {
-            log.error("❌ Lỗi mở port {}: {}", com, e.getMessage());
-            return null;
         }
-    }
-
-    /**
-     * Đóng port khi shutdown app
-     */
-    public void closeAll() {
-        portCache.forEach((com, port) -> {
-            if (port != null && port.isOpen()) {
-                port.closePort();
-                log.info("🔒 Đã đóng port {}", com);
-            }
-        });
-        portCache.clear();
     }
 }

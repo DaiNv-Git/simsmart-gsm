@@ -142,7 +142,7 @@ public class AtCommandHelper implements AutoCloseable {
         out.flush();
     }
 
-    private void flushInput() {
+    public void flushInput() {
         try {
             while (in.available() > 0) {
                 int n = Math.min(in.available(), 4096);
