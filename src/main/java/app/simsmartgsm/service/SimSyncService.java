@@ -256,31 +256,15 @@ public class SimSyncService {
         // 2. Đọc inbox từ receiver duy nhất
         readAllTokensFromReceiver(deviceName, receiver.comName, tokenMap, 20_000);
     }
+
     private void readAllTokensFromReceiver(String deviceName, String receiverCom,
                                            Map<String, ScannedSim> tokenMap, long timeoutMs) {
         long start = System.currentTimeMillis();
         Map<String, String> resolved = new HashMap<>();
 
-        ReentrantLock lock = portLocks.computeIfAbsent(receiverCom, k -> new ReentrantLock());
-        if (!tryLock(lock, 2000)) {
-            log.warn("⏭️ Không lấy được lock cho receiver {}", receiverCom);
-            return;
-        }
-
-        SerialPort port = SerialPort.getCommPort(receiverCom);
-        try {
-            port.setBaudRate(BAUD);
-            port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
-
-            if (!port.openPort()) {
-                log.error("❌ Không mở được receiver {}", receiverCom);
-                return;
-            }
-
-            try (AtCommandHelper helper = new AtCommandHelper(port)) {
-                while (System.currentTimeMillis() - start < timeoutMs
-                        && resolved.size() < tokenMap.size()) {
-
+        while (System.currentTimeMillis() - start < timeoutMs && resolved.size() < tokenMap.size()) {
+            Boolean ok = portManager.withPort(receiverCom, helper -> {
+                try {
                     var unread = helper.listUnreadSmsText(3000);
                     for (var sms : unread) {
                         for (var entry : tokenMap.entrySet()) {
@@ -295,16 +279,21 @@ public class SimSyncService {
                             }
                         }
                     }
-                    Thread.sleep(2000);
+                    return true;
+                } catch (Exception e) {
+                    log.error("❌ Lỗi đọc inbox {}: {}", receiverCom, e.getMessage());
+                    return false;
                 }
+            }, 3000);
+
+            if (ok == null || !ok) {
+                log.warn("⚠️ Receiver {} không đọc được trong tick này", receiverCom);
             }
-        } catch (Exception e) {
-            log.error("❌ Lỗi khi đọc receiver {}: {}", receiverCom, e.getMessage());
-        } finally {
-            if (port.isOpen()) port.closePort();
-            lock.unlock();
+
+            try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
         }
     }
+
 
     private void updateDb(String deviceName, ScannedSim sim, String phoneNumber) {
         Sim dbSim = simRepository.findByDeviceNameAndCcid(deviceName, sim.ccid)
