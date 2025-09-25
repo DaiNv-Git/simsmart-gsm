@@ -24,9 +24,9 @@ public class SimSyncController {
      * @param deviceName tên máy (lấy từ AT+CGMI hoặc config)
      */
     @PostMapping("/scan")
-    public String scanAndSync(@RequestParam(defaultValue = "LOCAL-GSM") String deviceName) {
-        simSyncService.syncAndResolvePhoneNumbers(deviceName);
-        return "✅ Scan & sync started for deviceName=" + deviceName;
+    public String scanAndSync() {
+        simSyncService.syncAndResolvePhoneNumbers();
+        return "✅ Scan & sync started for deviceName=";
     }
 
     /**

@@ -258,4 +258,202 @@ public class AtCommandHelper implements AutoCloseable {
 
     /** Lấy manufacturer/model để làm deviceName nếu cần. */
     public String getDeviceInfo() throws IOException, InterruptedException {
-        String man
+        String man = sendAndRead("AT+CGMI", 1200).replaceAll("OK|\\r|\\n", "").trim();
+        String model = sendAndRead("AT+CGMM", 1200).replaceAll("OK|\\r|\\n", "").trim();
+        if (!man.isBlank() && !model.isBlank()) return man + " " + model;
+        return (man + " " + model).trim();
+    }
+
+    /** Chất lượng sóng. */
+    public String getSignalCsq() throws IOException, InterruptedException {
+        return sendAndRead("AT+CSQ", 800);
+    }
+
+    // ---------- SMS (TEXT mode) ----------
+
+    /**
+     * Gửi SMS text đơn giản: tự set CMGF=1, CSCS="GSM".
+     * Lưu ý: với nội dung Unicode, cách an toàn là PDU (chưa hỗ trợ ở đây).
+     */
+    public boolean sendTextSms(String toNumber, String content, Duration totalTimeout) throws IOException, InterruptedException {
+        ensureOpen();
+        setTextMode(true);
+        setCharset("GSM");
+
+        // Bước 1: ra lệnh CMGS
+        String cmgsResp = sendCommand("AT+CMGS=\"" + toNumber + "\"", (int) Math.max(1500, totalTimeout.toMillis()), 0);
+        if (!cmgsResp.contains(">")) {
+            // đôi khi modem trả prompt '>' muộn, thử đọc thêm chút
+            String extra = readUntilMarkers(1200, ">");
+            if (extra == null || !extra.contains(">")) {
+                return false;
+            }
+        }
+
+        // Bước 2: gửi nội dung + Ctrl+Z
+        sendSmsContent(content);
+
+        // Bước 3: đọc kết quả
+        String finalResp = readResponse((int) Math.max(4000, totalTimeout.toMillis()));
+        return finalResp.contains("OK") || finalResp.contains("+CMGS");
+    }
+
+    /**
+     * Đọc danh sách SMS UNREAD ở TEXT mode.
+     * Trả về list bản ghi đã parse (index, status, sender, timestamp, body).
+     */
+    public List<SmsRecord> listUnreadSmsText(int timeoutMs) throws IOException, InterruptedException {
+        setTextMode(true);
+        String out = sendAndRead("AT+CMGL=\"REC UNREAD\"", timeoutMs);
+        return parseCmglText(out);
+    }
+
+    /** Đọc tất cả SMS (ALL) ở TEXT mode. */
+    public List<SmsRecord> listAllSmsText(int timeoutMs) throws IOException, InterruptedException {
+        setTextMode(true);
+        String out = sendAndRead("AT+CMGL=\"ALL\"", timeoutMs);
+        return parseCmglText(out);
+    }
+
+    /** Đọc 1 SMS theo index. */
+    public SmsRecord readSmsByIndexText(int index, int timeoutMs) throws IOException, InterruptedException {
+        setTextMode(true);
+        String out = sendAndRead("AT+CMGR=" + index, timeoutMs);
+        // CMGR format tương tự: header + line body
+        return parseCmgrText(out);
+    }
+
+    /** Xóa SMS theo index. */
+    public boolean deleteSms(int index) throws IOException, InterruptedException {
+        return sendAtOk("AT+CMGD=" + index, 1500);
+    }
+
+    /** Xóa toàn bộ SMS (cẩn trọng, tùy modem: 1,4 thường là delete all). */
+    public boolean deleteAllSmsDanger() throws IOException, InterruptedException {
+        return sendAtOk("AT+CMGD=1,4", 3000);
+    }
+
+    // ---------- Parsers ----------
+
+    /**
+     * Parse output của AT+CMGL="...".
+     * Mẫu:
+     * +CMGL: 1,"REC UNREAD","+84901234567",,"23/09/25,10:15:00+28"
+     * Hello world
+     */
+    public static List<SmsRecord> parseCmglText(String out) {
+        List<SmsRecord> list = new ArrayList<>();
+        if (out == null || out.isBlank()) return list;
+
+        String[] lines = out.split("\\r?\\n");
+        SmsRecord cur = null;
+        for (String line : lines) {
+            if (line.startsWith("+CMGL:")) {
+                // đóng bản ghi cũ nếu có
+                if (cur != null) {
+                    list.add(cur);
+                }
+                cur = new SmsRecord();
+                // tách index, status, sender, timestamp
+                // +CMGL: <idx>,"<stat>","<oa>",,"<scts>"
+                Matcher m = Pattern.compile("\\+CMGL:\\s*(\\d+)\\s*,\"([^\"]*)\"\\s*,\"([^\"]*)\".*?\"([^\"]*)\"")
+                        .matcher(line);
+                if (m.find()) {
+                    cur.index = Integer.parseInt(m.group(1));
+                    cur.status = m.group(2);
+                    cur.sender = m.group(3);
+                    cur.timestamp = m.group(4);
+                } else {
+                    // fallback: chỉ lấy index
+                    Matcher m2 = Pattern.compile("\\+CMGL:\\s*(\\d+)").matcher(line);
+                    if (m2.find()) {
+                        cur.index = Integer.parseInt(m2.group(1));
+                    }
+                }
+            } else {
+                // body (1 hoặc nhiều dòng)
+                if (cur != null) {
+                    if (cur.body == null) cur.body = line;
+                    else cur.body += "\n" + line;
+                }
+            }
+        }
+        if (cur != null) list.add(cur);
+        return list;
+    }
+
+    /**
+     * Parse output của AT+CMGR=<idx>
+     * Mẫu:
+     * +CMGR: "REC UNREAD","+8490...",,"24/09/25,12:00:00+28"
+     * content...
+     */
+    public static SmsRecord parseCmgrText(String out) {
+        if (out == null || out.isBlank()) return null;
+        String[] lines = out.split("\\r?\\n");
+        SmsRecord rec = null;
+        for (String line : lines) {
+            if (line.startsWith("+CMGR:")) {
+                rec = new SmsRecord();
+                Matcher m = Pattern.compile("\\+CMGR:\\s*\"([^\"]*)\"\\s*,\"([^\"]*)\".*?\"([^\"]*)\"").matcher(line);
+                if (m.find()) {
+                    rec.status = m.group(1);
+                    rec.sender = m.group(2);
+                    rec.timestamp = m.group(3);
+                }
+            } else if (line.contains("OK") || line.contains("ERROR")) {
+                // stop
+            } else {
+                if (rec != null) {
+                    if (rec.body == null) rec.body = line; else rec.body += "\n" + line;
+                }
+            }
+        }
+        return rec;
+    }
+
+    private static String sanitizeSingleLine(String s) {
+        if (s == null) return null;
+        String t = s.replaceAll("\\r|\\n|OK|ERROR", "").trim();
+        return t.isBlank() ? null : t;
+    }
+
+    // ---------- Lifecycle ----------
+
+    @Override
+    public void close() {
+        try { in.close(); } catch (Exception ignored) {}
+        try { out.close(); } catch (Exception ignored) {}
+        if (ownsPort) {
+            try { port.closePort(); } catch (Exception ignored) {}
+        }
+    }
+
+    // ---------- DTO ----------
+    /**
+     * Lấy tên thiết bị (deviceName) từ modem bằng AT+CGMI (manufacturer) + AT+CGMM (model).
+     * Ví dụ: "Quectel EC25"
+     */
+    public String getDeviceName() throws IOException, InterruptedException {
+        String man = sendAndRead("AT+CGMI", 1200)
+                .replaceAll("OK|\\r|\\n", "").trim();
+        String model = sendAndRead("AT+CGMM", 1200)
+                .replaceAll("OK|\\r|\\n", "").trim();
+
+        String name = (man + " " + model).trim();
+        return name.isBlank() ? port.getSystemPortName() : name;
+    }
+
+
+    public static class SmsRecord {
+        public Integer index;     // CMGL index
+        public String status;     // REC READ / REC UNREAD / ...
+        public String sender;     // Số người gửi
+        public String timestamp;  // Thời gian modem parse
+        public String body;       // Nội dung (TEXT mode)
+        @Override public String toString() {
+            return "SmsRecord{index=" + index + ", status='" + status + "', sender='" + sender + "', timestamp='" + timestamp + "', body='" + body + "'}";
+        }
+
+    }
+}

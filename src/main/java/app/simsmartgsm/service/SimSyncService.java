@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.net.InetAddress;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
@@ -34,7 +35,15 @@ public class SimSyncService {
     /**
      * Entry point: quét tất cả port, cập nhật DB, rồi lấy số cho các SIM chưa có phoneNumber
      */
-    public void syncAndResolvePhoneNumbers(String deviceName) {
+    public static String getDeviceName() {
+        try {
+            return InetAddress.getLocalHost().getHostName();
+        } catch (Exception e) {
+            return System.getenv().getOrDefault("COMPUTERNAME", "UNKNOWN");
+        }
+    }
+    public void syncAndResolvePhoneNumbers() {
+        String deviceName= getDeviceName();
         log.info("Start syncAndResolvePhoneNumbers for deviceName={}", deviceName);
 
         List<ScannedSim> scanned = scanAllPorts(deviceName);
