@@ -145,7 +145,13 @@ public class SimSyncService {
                             .status("new")
                             .build());
 
-            // reset missCount nếu tìm thấy
+            // ♻️ Nếu trước đó bị replaced → khôi phục lại active
+            if ("replaced".equals(sim.getStatus())) {
+                log.info("♻️ SIM {} (com={}) được khôi phục từ replaced -> active",
+                        ss.ccid, ss.comName);
+            }
+
+            // reset missCount
             sim.setMissCount(0);
             sim.setStatus("active");
             sim.setImsi(ss.imsi);
@@ -156,6 +162,7 @@ public class SimSyncService {
 
             toSave.add(sim);
         }
+
 
         // SIM không thấy trong scan
         for (Sim db : dbSims) {
