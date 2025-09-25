@@ -237,51 +237,77 @@ public class SimSyncService {
 
     /** Chỉ gửi SMS test khi DB KHÔNG có số. Gom saveAll để giảm query. */
     private void resolvePhoneNumbers(String deviceName, List<ScannedSim> unknown, ScannedSim receiver) {
-        List<Sim> dbSims = simRepository.findByDeviceName(deviceName);
-        Map<String, Sim> dbMap = dbSims.stream()
-                .filter(s -> s.getCcid() != null)
-                .collect(Collectors.toMap(Sim::getCcid, s -> s, (a, b) -> a));
+        Map<String, ScannedSim> tokenMap = new HashMap<>();
 
-        List<Sim> toSave = new ArrayList<>();
-
+        // 1. Gửi SMS test
         for (ScannedSim sim : unknown) {
             if (sim.ccid == null) continue;
 
-            Sim dbSim = dbMap.get(sim.ccid);
-
-            // Nếu DB đã có số -> bỏ qua hoàn toàn
-            if (dbSim != null && dbSim.getPhoneNumber() != null && !dbSim.getPhoneNumber().isBlank()) {
-                log.info("⏩ SIM com={} ccid={} đã có số {} trong DB, bỏ qua resolve",
-                        sim.comName, sim.ccid, dbSim.getPhoneNumber());
-                continue;
-            }
-
-            // Gửi SMS test
             String token = "CHECK-" + UUID.randomUUID().toString().substring(0, 6);
-            log.info("👉 Gửi token={} từ {} -> {}", token, sim.comName, receiver.phoneNumber);
-
             boolean sent = sendSmsFromPort(sim.comName, receiver.phoneNumber, token);
-            if (!sent) continue;
-
-            String found = pollReceiverForToken(receiver.comName, token, 20_000);
-            if (found != null) {
-                log.info("✅ Resolve: com={} ccid={} phone={}", sim.comName, sim.ccid, found);
-
-                if (dbSim == null) {
-                    dbSim = Sim.builder()
-                            .ccid(sim.ccid)
-                            .deviceName(deviceName)
-                            .comName(sim.comName)
-                            .build();
-                }
-                dbSim.setPhoneNumber(found);
-                dbSim.setStatus("active");
-                dbSim.setLastUpdated(Instant.now());
-                toSave.add(dbSim);
+            if (sent) {
+                tokenMap.put(token, sim);
+                log.info("👉 Gửi token={} từ {} -> {}", token, sim.comName, receiver.phoneNumber);
             }
         }
 
-        if (!toSave.isEmpty()) simRepository.saveAll(toSave);
+        if (tokenMap.isEmpty()) return;
+
+        // 2. Đọc inbox từ receiver duy nhất
+        readAllTokensFromReceiver(deviceName, receiver.comName, tokenMap, 20_000);
+    }
+
+    private void readAllTokensFromReceiver(String deviceName, String receiverCom,
+                                           Map<String, ScannedSim> tokenMap, long timeoutMs) {
+        long start = System.currentTimeMillis();
+        Map<String, String> resolved = new HashMap<>();
+
+        while (System.currentTimeMillis() - start < timeoutMs && resolved.size() < tokenMap.size()) {
+            SerialPort port = SerialPort.getCommPort(receiverCom);
+            port.setBaudRate(115200);
+            port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
+
+            if (!port.openPort()) {
+                try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
+                continue;
+            }
+
+            try (AtCommandHelper helper = new AtCommandHelper(port)) {
+                var unread = helper.listUnreadSmsText(3000);
+                for (var sms : unread) {
+                    for (var entry : tokenMap.entrySet()) {
+                        if (sms.body != null && sms.body.contains(entry.getKey())) {
+                            ScannedSim sim = entry.getValue();
+                            resolved.put(sim.ccid, sms.sender);
+
+                            // Update DB ngay
+                            updateDb(deviceName, sim, sms.sender);
+                            log.info("✅ Resolve SIM ccid={} com={} phone={}", sim.ccid, sim.comName, sms.sender);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.error("❌ Đọc inbox từ {} lỗi: {}", receiverCom, e.getMessage());
+            } finally {
+                port.closePort();
+            }
+
+            try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
+        }
+    }
+    private void updateDb(String deviceName, ScannedSim sim, String phoneNumber) {
+        Sim dbSim = simRepository.findByDeviceNameAndCcid(deviceName, sim.ccid)
+                .orElse(Sim.builder()
+                        .ccid(sim.ccid)
+                        .deviceName(deviceName)
+                        .comName(sim.comName)
+                        .build());
+
+        dbSim.setPhoneNumber(phoneNumber);
+        dbSim.setStatus("active");
+        dbSim.setLastUpdated(Instant.now());
+
+        simRepository.save(dbSim);
     }
 
     private boolean sendSmsFromPort(String fromCom, String toNumber, String token) {
