@@ -181,16 +181,24 @@ public class SimSyncService {
         }
     }
 
-
     private void resolvePhoneNumbers(String deviceName, List<ScannedSim> unknown, ScannedSim receiver) {
+        // Load toàn bộ SIM của deviceName một lần
+        List<Sim> dbSims = simRepository.findByDeviceName(deviceName);
+        Map<String, Sim> dbMap = dbSims.stream()
+                .filter(s -> s.getCcid() != null)
+                .collect(Collectors.toMap(Sim::getCcid, s -> s, (a, b) -> a));
+
+        List<Sim> toSave = new ArrayList<>();
+
         for (ScannedSim sim : unknown) {
             if (sim.ccid == null) continue;
 
-            // 👉 check DB trước
-            Optional<Sim> dbSimOpt = simRepository.findByDeviceNameAndCcid(deviceName, sim.ccid);
-            if (dbSimOpt.isPresent() && dbSimOpt.get().getPhoneNumber() != null) {
+            Sim dbSim = dbMap.get(sim.ccid);
+
+            // 👉 Bỏ qua nếu DB đã có số
+            if (dbSim != null && dbSim.getPhoneNumber() != null) {
                 log.info("⏩ Bỏ qua SIM com={} ccid={} vì DB đã có số {}",
-                        sim.comName, sim.ccid, dbSimOpt.get().getPhoneNumber());
+                        sim.comName, sim.ccid, dbSim.getPhoneNumber());
                 continue;
             }
 
@@ -205,19 +213,25 @@ public class SimSyncService {
             if (found != null) {
                 log.info("✅ Resolve thành công: com={} ccid={} phone={}", sim.comName, sim.ccid, found);
 
-                Sim dbSim = dbSimOpt.orElse(Sim.builder()
-                        .ccid(sim.ccid)
-                        .deviceName(deviceName)
-                        .comName(sim.comName)
-                        .build());
+                if (dbSim == null) {
+                    dbSim = Sim.builder()
+                            .ccid(sim.ccid)
+                            .deviceName(deviceName)
+                            .comName(sim.comName)
+                            .build();
+                }
                 dbSim.setPhoneNumber(found);
                 dbSim.setStatus("active");
                 dbSim.setLastUpdated(Instant.now());
-                simRepository.save(dbSim);
+                toSave.add(dbSim);
             }
         }
 
-}
+        // saveAll một lần
+        if (!toSave.isEmpty()) {
+            simRepository.saveAll(toSave);
+        }
+    }
 
     private boolean sendSmsFromPort(String fromCom, String toNumber, String token) {
         SerialPort port = SerialPort.getCommPort(fromCom);
