@@ -31,6 +31,8 @@ public class SimSyncService {
     private static final long RECEIVE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(20); // time chờ tin nhắn đến trên receiver
     private static final int MAX_RECEIVER_TO_TRY = 3; // thử tối đa 3 receiver (COM đầu tiên, 2,3)
     private static final int SMS_SEND_RETRY = 2;
+    private static final int MAX_RECEIVER_WAIT_MINUTES = 5;
+    private static final long RETRY_INTERVAL_MS = 30_000;
 
     /**
      * Entry point: quét tất cả port, cập nhật DB, rồi lấy số cho các SIM chưa có phoneNumber
@@ -42,101 +44,94 @@ public class SimSyncService {
             return System.getenv().getOrDefault("COMPUTERNAME", "UNKNOWN");
         }
     }
-    public void syncAndResolvePhoneNumbers() {
-        String deviceName= getDeviceName();
-        log.info("Start syncAndResolvePhoneNumbers for deviceName={}", deviceName);
+
+
+    public void syncAndResolvePhoneNumbers(String deviceName) {
+        log.info("Start sync for device={}", deviceName);
 
         List<ScannedSim> scanned = scanAllPorts(deviceName);
-
-        // 2. Sync: insert new active, update lastUpdated
         syncScannedToDb(deviceName, scanned);
 
-        // 3. Chọn receiver candidates (ports có phoneNumber)
+        // --- Tìm receiver ---
         List<ScannedSim> receivers = selectReceivers(scanned);
+        long start = System.currentTimeMillis();
+
+        while (receivers.isEmpty() &&
+                System.currentTimeMillis() - start < MAX_RECEIVER_WAIT_MINUTES * 60_000L) {
+            log.warn("Chưa tìm thấy receiver có số. Sẽ thử lại sau {} giây...",
+                    RETRY_INTERVAL_MS / 1000);
+            try { Thread.sleep(RETRY_INTERVAL_MS); } catch (InterruptedException ignored) {}
+
+            scanned = scanAllPorts(deviceName);
+            syncScannedToDb(deviceName, scanned);
+            receivers = selectReceivers(scanned);
+        }
+
         if (receivers.isEmpty()) {
-            log.warn("Không tìm được receiver (port có phoneNumber). Không thể tiếp tục bước lấy số.");
+            log.error("❌ Sau {} phút vẫn không tìm được receiver (SIM có phoneNumber). Bỏ qua bước resolve số.",
+                    MAX_RECEIVER_WAIT_MINUTES);
             return;
         }
 
-        // Trim to first N receivers
-        receivers = receivers.stream().limit(MAX_RECEIVER_TO_TRY).collect(Collectors.toList());
-        log.info("Receiver candidates: {}", receivers.stream().map(s -> s.comName + "/" + s.phoneNumber).collect(Collectors.joining(",")));
+        log.info("Đã tìm được {} receiver(s): {}", receivers.size(),
+                receivers.stream().map(r -> r.comName + "/" + r.phoneNumber).toList());
 
-        // 4. Tạo map ccid->Sim entity để dễ update
+        // --- Tiếp tục resolve số cho các SIM chưa biết ---
+        resolvePhoneNumbers(deviceName, scanned, receivers);
+    }
+    /**
+     * Resolve phoneNumber cho các SIM chưa có số bằng cách gửi SMS test tới receiver(s).
+     */
+    private void resolvePhoneNumbers(String deviceName,
+                                     List<ScannedSim> scanned,
+                                     List<ScannedSim> receivers) {
+
+        // Tạo map ccid -> entity DB
         Map<String, Sim> dbMap = simRepository.findByDeviceName(deviceName).stream()
                 .collect(Collectors.toMap(Sim::getCcid, s -> s));
 
-        // 5. For each scanned sim missing phoneNumber -> request it send to receivers
-        for (ScannedSim s : scanned) {
-            if (s.phoneNumber != null && !s.phoneNumber.isBlank()) continue; // đã có số
-
-            if (s.ccid == null || s.ccid.isBlank()) {
-                log.warn("Port {} không đọc được CCID, bỏ qua", s.comName);
-                continue;
-            }
-
-            log.info("Thử resolve phoneNumber cho CCID={} (com={})", s.ccid, s.comName);
+        for (ScannedSim sim : scanned) {
+            if (sim.phoneNumber != null && !sim.phoneNumber.isBlank()) continue; // đã có số
+            if (sim.ccid == null || sim.ccid.isBlank()) continue;
 
             boolean resolved = false;
             for (ScannedSim receiver : receivers) {
-                if (receiver.comName.equalsIgnoreCase(s.comName)) {
-                    // không cho port tự gửi tới chính nó
+                if (receiver.comName.equalsIgnoreCase(sim.comName)) continue;
+
+                String token = "CHECK-" + UUID.randomUUID().toString().substring(0, 6);
+                log.info("👉 Gửi token={} từ {} -> {}",
+                        token, sim.comName, receiver.phoneNumber);
+
+                boolean sent = sendSmsFromPort(sim.comName, receiver.phoneNumber, token);
+                if (!sent) {
+                    log.warn("Gửi SMS từ {} tới {} thất bại", sim.comName, receiver.phoneNumber);
                     continue;
                 }
 
-                for (int attempt = 1; attempt <= SMS_SEND_RETRY && !resolved; attempt++) {
-                    String token = "CHECK-" + UUID.randomUUID().toString().substring(0, 6);
-                    log.info("Gửi token={} từ {} -> {} (attempt {}/{})", token, s.comName, receiver.phoneNumber, attempt, SMS_SEND_RETRY);
+                // Chờ receiver nhận tin nhắn
+                String found = pollReceiverForToken(receiver.comName, token, 20_000);
+                if (found != null) {
+                    log.info("✅ Resolve thành công: com={} ccid={} phoneNumber={}",
+                            sim.comName, sim.ccid, found);
 
-                    boolean sendOk = sendSmsFromPort(s.comName, receiver.phoneNumber, token);
-                    if (!sendOk) {
-                        log.warn("Gửi SMS từ {} tới {} thất bại (attempt {}).", s.comName, receiver.phoneNumber, attempt);
-                        continue; // thử lại
-                    }
+                    Sim dbSim = dbMap.getOrDefault(sim.ccid,
+                            Sim.builder().ccid(sim.ccid).deviceName(deviceName).comName(sim.comName).build());
+                    dbSim.setPhoneNumber(found);
+                    dbSim.setStatus("active");
+                    dbSim.setLastUpdated(Instant.now());
+                    simRepository.save(dbSim);
 
-                    // Poll receiver inbox để tìm tin nhắn chứa token (vì sender sẽ là số cần lấy)
-                    String foundSenderNumber = pollReceiverForToken(receiver.comName, token, RECEIVE_TIMEOUT_MS);
-                    if (foundSenderNumber != null) {
-                        log.info("Đã resolve: CCID={} com={} => phoneNumber={}", s.ccid, s.comName, foundSenderNumber);
-                        // cập nhật vào DB
-                        Sim dbSim = dbMap.getOrDefault(s.ccid, Sim.builder().ccid(s.ccid).deviceName(deviceName).comName(s.comName).build());
-                        dbSim.setPhoneNumber(foundSenderNumber);
-                        dbSim.setStatus("active");
-                        dbSim.setLastUpdated(Instant.now());
-                        simRepository.save(dbSim);
-                        resolved = true;
-                        break;
-                    } else {
-                        log.info("Không thấy SMS chứa token={} trên receiver {} (attempt {}). Thử receiver tiếp.", token, receiver.comName, attempt);
-                    }
-                } // attempts
-
-                if (resolved) break; // next sender
-            } // receiver loop
+                    resolved = true;
+                    break;
+                }
+            }
 
             if (!resolved) {
-                log.warn("Không resolve được phoneNumber cho CCID={} com={}", s.ccid, s.comName);
-                // vẫn lưu/update record nếu cần (phoneNumber null) và giữ status active
-                Sim dbSim = dbMap.getOrDefault(s.ccid, Sim.builder().ccid(s.ccid).deviceName(deviceName).comName(s.comName).build());
-                dbSim.setStatus("active");
-                dbSim.setLastUpdated(Instant.now());
-                simRepository.save(dbSim);
+                log.warn("❌ Không resolve được số cho SIM ccid={} com={}", sim.ccid, sim.comName);
             }
-        } // scanned loop
-
-        // 6. Mark replaced: DB ccids not present in current scan => replaced
-        Set<String> scannedCcids = scanned.stream().map(ss -> ss.ccid).filter(Objects::nonNull).collect(Collectors.toSet());
-        simRepository.findByDeviceName(deviceName).stream()
-                .filter(db -> db.getCcid() != null && !scannedCcids.contains(db.getCcid()))
-                .forEach(db -> {
-                    db.setStatus("replaced");
-                    db.setLastUpdated(Instant.now());
-                    simRepository.save(db);
-                    log.info("Mark replaced CCID={} com={}", db.getCcid(), db.getComName());
-                });
-
-        log.info("Finish syncAndResolvePhoneNumbers for deviceName={}", deviceName);
+        }
     }
+
 
     // ---------- Helper types & methods ----------
 
