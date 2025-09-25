@@ -332,6 +332,7 @@ public class SimSyncService {
         }, 2500);
         return result != null && result;
     }
+
     private String pollReceiverForToken(String receiverCom, String token, long timeoutMs) {
         long start = System.currentTimeMillis();
         while (System.currentTimeMillis() - start < timeoutMs) {
