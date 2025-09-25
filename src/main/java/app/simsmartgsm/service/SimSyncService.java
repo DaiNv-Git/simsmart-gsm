@@ -10,6 +10,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.net.InetAddress;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
@@ -23,7 +24,7 @@ import java.util.stream.Collectors;
 public class SimSyncService {
 
     private final SimRepository simRepository;
-
+    private final PortManager portManager;
     // ==== CONFIG ====
     private static final int THREAD_POOL_SIZE = 8;          // scan song song
     private static final int AT_TIMEOUT_MS = 1000;
@@ -284,16 +285,16 @@ public class SimSyncService {
     }
 
     private boolean sendSmsFromPort(String fromCom, String toNumber, String token) {
-        return withPort(fromCom, helper -> {
+        Boolean result = portManager.withPort(fromCom, helper -> {
             try {
-                return helper.sendTextSms(toNumber, token, java.time.Duration.ofSeconds(15));
+                return helper.sendTextSms(toNumber, token, Duration.ofSeconds(15));
             } catch (Exception e) {
                 log.error("Gửi SMS lỗi từ {}: {}", fromCom, e.getMessage());
                 return false;
             }
-        }, 2_500);
+        }, 2500);
+        return result != null && result;
     }
-
     private String pollReceiverForToken(String receiverCom, String token, long timeoutMs) {
         long start = System.currentTimeMillis();
         while (System.currentTimeMillis() - start < timeoutMs) {
