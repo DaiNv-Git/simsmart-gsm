@@ -1,5 +1,6 @@
 package app.simsmartgsm.service;
 
+import app.simsmartgsm.entity.Sim;
 import app.simsmartgsm.uitils.AtCommandHelper;
 import com.fazecast.jSerialComm.SerialPort;
 import app.simsmartgsm.dto.request.SimRequest.PortInfo;
@@ -7,9 +8,13 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import app.simsmartgsm.repository.SimRepository;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.*;
 
 @Service
@@ -26,6 +31,19 @@ public class PortScannerService {
     private static final int BAUD_RATE = 115200;
 
     private final ExecutorService executor = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
+
+    private final SimRepository simRepository;
+    private final SmsSenderService smsSenderService;
+    private final SmsSenderServiceImpl smsSenderServiceImpl;
+
+    // verification phone number (a configured number where outgoing verification SMS will be received)
+    private final String verificationNumber = "YOUR_VERIFICATION_NUMBER"; // TODO: inject from application.properties
+
+    public PortScannerService(SimRepository simRepository, SmsSenderService smsSenderService, SmsSenderServiceImpl smsSenderServiceImpl) {
+        this.simRepository = simRepository;
+        this.smsSenderService = smsSenderService;
+        this.smsSenderServiceImpl = smsSenderServiceImpl;
+    }
 
     public List<PortInfo> scanAllPorts() {
         SerialPort[] ports = SerialPort.getCommPorts();
@@ -74,7 +92,6 @@ public class PortScannerService {
     private PortInfo scanSinglePort(SerialPort port) {
         String portName = port.getSystemPortName();
         port.setBaudRate(BAUD_RATE);
-        // use semi-blocking or non-blocking depending on AtCommandHelper's internals
         port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, CMD_TIMEOUT_MED_MS, CMD_TIMEOUT_MED_MS);
 
         if (!port.openPort()) {
@@ -89,7 +106,6 @@ public class PortScannerService {
             // 1) Quick sanity check: AT
             String atResp = tryCmdWithTimeout(helper, "AT", CMD_TIMEOUT_SHORT_MS, CMD_RETRY);
             if (atResp == null || atResp.isEmpty()) {
-                // không return ngay, nhưng mark "No AT" và cố gọi các lệnh khác nhanh
                 log.debug("{}: no AT response", portName);
             }
 
@@ -116,7 +132,55 @@ public class PortScannerService {
             else if (ccid != null && imsi != null) msg = "OK";
             else msg = "Partial";
 
-            // If per-port time used up, return early
+            // If phone discovered -> persist/update DB
+            if (phone != null) {
+                saveOrUpdateSim(ccid, imsi, portName, provider, phone);
+            } else {
+                // phone == null: fallback logic
+                // 1) Check if sim with this ccid/imsi exists in DB already
+                boolean exists = false;
+                if (ccid != null) {
+                    exists = simRepository.findFirstByCcid(ccid).isPresent();
+                }
+                if (!exists && imsi != null) {
+                    exists = simRepository.findFirstByImsi(imsi).isPresent();
+                }
+
+                if (!exists) {
+                    // Not known in DB -> attempt to trigger verification SMS from this SIM
+                    try {
+                        String token = "VERIFY-" + UUID.randomUUID().toString().substring(0, 8);
+                        String message = "SIM_VERIF:" + token; // unique token for inbound matching
+
+                        // send SMS from this port to verificationNumber
+                        boolean sendOk = smsSenderServiceImpl.sendSmsFromPort(port, verificationNumber, message);
+                        if (sendOk) {
+                            msg = msg + " (verification-sent)";
+                            // Save as pending in DB so inbound processor can match later
+                            Sim s = Sim.builder()
+                                    .ccid(ccid)
+                                    .comName(portName)
+                                    .deviceName("local") // TODO set real deviceName
+                                    .simProvider(provider)
+                                    .phoneNumber(null)
+                                    .status("PENDING_VERIFICATION")
+                                    .content(token) // store token so incoming SMS processor can match by token
+                                    .lastUpdated(new java.util.Date().toInstant())
+                                    .build();
+                            simRepository.save(s);
+                            log.info("Saved pending verification sim ccid={} token={}", ccid, token);
+                        } else {
+                            msg = msg + " (verification-failed)";
+                        }
+                    } catch (Exception e) {
+                        log.warn("Failed to send verification SMS from {}: {}", portName, e.getMessage(), e);
+                        msg = msg + " (verification-exception)";
+                    }
+                } else {
+                    msg = msg + " (exists-in-db)";
+                }
+            }
+
             long elapsed = System.currentTimeMillis() - startMillis;
             if (elapsed > PER_PORT_TOTAL_TIMEOUT_MS) {
                 msg = msg + " (timed)";
@@ -130,6 +194,46 @@ public class PortScannerService {
         } finally {
             try { port.closePort(); } catch (Exception ignore) {}
         }
+    }
+
+    private void saveOrUpdateSim(String ccid, String imsi, String portName, String provider, String phone) {
+        Optional<Sim> byCcid = ccid == null ? Optional.empty() : simRepository.findFirstByCcid(ccid);
+        if (byCcid.isPresent()) {
+           Sim s = byCcid.get();
+            s.setPhoneNumber(phone);
+            s.setSimProvider(provider);
+            s.setComName(portName);
+            s.setStatus("active");
+            s.setLastUpdated(new java.util.Date().toInstant());
+            simRepository.save(s);
+            log.info("Updated existing sim ccid={} phone={}", ccid, phone);
+            return;
+        }
+        Optional<Sim> byImsi = imsi == null ? Optional.empty() : simRepository.findFirstByImsi(imsi);
+        if (byImsi.isPresent()) {
+            Sim s = byImsi.get();
+            s.setPhoneNumber(phone);
+            s.setSimProvider(provider);
+            s.setComName(portName);
+            s.setStatus("active");
+            s.setLastUpdated(new java.util.Date().toInstant());
+            simRepository.save(s);
+            log.info("Updated existing sim imsi={} phone={}", imsi, phone);
+            return;
+        }
+
+        // not found -> create
+       Sim s =Sim.builder()
+                .ccid(ccid)
+                .comName(portName)
+                .deviceName("local")
+                .simProvider(provider)
+                .phoneNumber(phone)
+                .status("active")
+                .lastUpdated(new java.util.Date().toInstant())
+                .build();
+        simRepository.save(s);
+        log.info("Saved new sim ccid={} phone={}", ccid, phone);
     }
 
     /**
@@ -153,7 +257,8 @@ public class PortScannerService {
         return null;
     }
 
-    // ---- Parsers và detect providers (giữ nguyên / tinh gọn) ----
+    // Parsers and detectProvider (unchanged)...
+
     private String parsePhoneNumberFromCnum(String response) {
         if (response == null || response.isEmpty()) return null;
         for (String line : response.split("\\r?\\n")) {
