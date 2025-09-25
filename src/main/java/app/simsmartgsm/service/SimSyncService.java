@@ -161,11 +161,20 @@ public class SimSyncService {
         });
     }
 
-    /**
-     * Resolve số điện thoại cho SIM chưa biết bằng cách gửi SMS test đến receiver.
-     */
+
     private void resolvePhoneNumbers(String deviceName, List<ScannedSim> unknown, ScannedSim receiver) {
         for (ScannedSim sim : unknown) {
+            if (sim.ccid == null) continue;
+
+            // 👉 check DB trước
+            Optional<Sim> dbSimOpt = simRepository.findByDeviceNameAndCcid(deviceName, sim.ccid);
+            if (dbSimOpt.isPresent() && dbSimOpt.get().getPhoneNumber() != null) {
+                log.info("⏩ Bỏ qua SIM com={} ccid={} vì DB đã có số {}",
+                        sim.comName, sim.ccid, dbSimOpt.get().getPhoneNumber());
+                continue;
+            }
+
+            // chưa có số trong DB => mới gửi SMS test
             String token = "CHECK-" + UUID.randomUUID().toString().substring(0, 6);
             log.info("👉 Gửi token={} từ {} -> {}", token, sim.comName, receiver.phoneNumber);
 
@@ -176,15 +185,19 @@ public class SimSyncService {
             if (found != null) {
                 log.info("✅ Resolve thành công: com={} ccid={} phone={}", sim.comName, sim.ccid, found);
 
-                Sim dbSim = simRepository.findByDeviceNameAndCcid(deviceName, sim.ccid)
-                        .orElse(Sim.builder().ccid(sim.ccid).deviceName(deviceName).comName(sim.comName).build());
+                Sim dbSim = dbSimOpt.orElse(Sim.builder()
+                        .ccid(sim.ccid)
+                        .deviceName(deviceName)
+                        .comName(sim.comName)
+                        .build());
                 dbSim.setPhoneNumber(found);
                 dbSim.setStatus("active");
                 dbSim.setLastUpdated(Instant.now());
                 simRepository.save(dbSim);
             }
         }
-    }
+
+}
 
     private boolean sendSmsFromPort(String fromCom, String toNumber, String token) {
         SerialPort port = SerialPort.getCommPort(fromCom);
