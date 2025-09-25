@@ -202,10 +202,13 @@ public class SimSyncService {
 
             Sim dbSim = dbMap.get(sim.ccid);
 
-            // 👉 Bỏ qua nếu DB đã có số
+            // 👉 Nếu DB đã có số thì gán lại cho sim, không cần gửi SMS nữa
             if (dbSim != null && dbSim.getPhoneNumber() != null) {
-                log.info("⏩ Bỏ qua SIM com={} ccid={} vì DB đã có số {}",
+                log.info("⏩ SIM com={} ccid={} đã có số {} trong DB, dùng luôn",
                         sim.comName, sim.ccid, dbSim.getPhoneNumber());
+                // cập nhật lại ScannedSim để lần sau không coi là unknown nữa
+                sim = new ScannedSim(sim.comName, sim.ccid, sim.imsi,
+                        dbSim.getPhoneNumber(), sim.simProvider);
                 continue;
             }
 
