@@ -97,14 +97,14 @@ public class RemoteSubscriberConfig {
                     // parse payload JSON thành RentSimRequest
                     RentSimRequest req = mapper.convertValue(payload, RentSimRequest.class);
 
-                    Sim sim = simRepository.findById(req.getSim())
-                            .orElseThrow(() -> new RuntimeException("SIM not found: " + req.getSim()));
+                    Sim sim = simRepository.findById(req.getPhoneNumber())
+                            .orElseThrow(() -> new RuntimeException("SIM not found: " + req.getPhoneNumber()));
 
-                    Country country = countryRepository.findByCountryCode(req.getCountryCode())
-                            .orElseThrow(() -> new RuntimeException("Country not found: " + req.getCountryCode()));
+                    Country country = countryRepository.findByCountryCode(req.getCountryName())
+                            .orElseThrow(() -> new RuntimeException("Country not found: " + req.getCountryName()));
 
                     // gọi service xử lý
-                    gsmListenerService.rentSim(sim, req.getAccountId(), req.getServiceCode(), req.getRentDuration(), country);
+                    gsmListenerService.rentSim(sim, req.getCustomerId(), req.getServiceCodeList(), req.getWaitingTime(), country);
 
                 } catch (Exception e) {
                     log.error("❌ Error processing message from {}: {}", SUB_TOPIC, e.getMessage(), e);
