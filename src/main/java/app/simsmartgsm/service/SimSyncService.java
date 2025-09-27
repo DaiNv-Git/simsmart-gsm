@@ -28,7 +28,7 @@ public class SimSyncService {
     private static final int MISS_THRESHOLD = 3;
 
     // chạy mỗi 100 giây
-    @Scheduled(fixedRate = 100_000)
+    @Scheduled(fixedRate = 60_000)
     public void scheduledFullScan() {
         try {
             syncAndResolve();
