@@ -14,10 +14,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.stomp.StompSession;
 import org.springframework.stereotype.Service;
-
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -79,7 +75,7 @@ public class GsmListenerService {
     }
 
     private String pickSenderPort(String receiverPort) {
-        String configured = "COM76"; 
+        String configured = "COM76";
         if (configured != null && !configured.equalsIgnoreCase(receiverPort)) {
             return configured;
         }
@@ -151,8 +147,8 @@ public class GsmListenerService {
     private void processSmsResponse(Sim sim, String resp) {
         try {
             SmsMessageUser sms = SmsParser.parse(resp);
-            
-                log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
+
+            log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
 
             boolean exists = smsMessageRepository
                     .findByFromPhoneAndToPhoneAndMessageAndType(
@@ -162,24 +158,24 @@ public class GsmListenerService {
                             "INBOUND"
                     ).isPresent();
 
-                if (!exists) {
-                    SmsMessage smsEntity = SmsMessage.builder()
-                            .deviceName(sim.getDeviceName())
-                            .fromPort(sim.getComName())
-                            .fromPhone(sms.getFrom())
-                            .toPhone(sim.getPhoneNumber())
-                            .message(sms.getContent())
-                            .modemResponse(resp)
-                            .type("INBOUND")
-                            .timestamp(Instant.now())
-                            .build();
+            if (!exists) {
+                SmsMessage smsEntity = SmsMessage.builder()
+                        .deviceName(sim.getDeviceName())
+                        .fromPort(sim.getComName())
+                        .fromPhone(sms.getFrom())
+                        .toPhone(sim.getPhoneNumber())
+                        .message(sms.getContent())
+                        .modemResponse(resp)
+                        .type("INBOUND")
+                        .timestamp(Instant.now())
+                        .build();
 
-                    smsMessageRepository.save(smsEntity);
-                    log.info("💾 Saved new SMS to DB and forwarding...");
+                smsMessageRepository.save(smsEntity);
+                log.info("💾 Saved new SMS to DB and forwarding...");
 
-                    routeMessage(sim, sms);
-                } else {
-                    log.debug("⚠️ Duplicate SMS ignored: {}", sms.getContent());
+                routeMessage(sim, sms);
+            } else {
+                log.debug("⚠️ Duplicate SMS ignored: {}", sms.getContent());
             }
         } catch (Exception e) {
             log.error("❌ Error processing SMS: {}", e.getMessage(), e);
@@ -206,7 +202,7 @@ public class GsmListenerService {
         String contentNorm = normalize(sms.getContent());
         boolean forwarded = false;
 
-         for (RentSession s : sessions) {
+        for (RentSession s : sessions) {
             if (!s.isActive()) continue;
 
             for (String service : s.getServices()) {
