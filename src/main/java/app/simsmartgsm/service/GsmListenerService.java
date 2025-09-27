@@ -119,61 +119,52 @@ public class GsmListenerService {
                 try (InputStream in = port.getInputStream();
                      OutputStream out = port.getOutputStream()) {
 
-                    // Cấu hình SMS text mode
-                    out.write("AT+CMGF=1\r".getBytes(StandardCharsets.US_ASCII));
+                    // Cấu hình SMS text mode + URC (Unsolicited Result Code)
+                    out.write("AT+CMGF=1\r".getBytes(StandardCharsets.US_ASCII)); // text mode
                     out.flush();
                     Thread.sleep(500);
 
-                    while (true) {
-                        // Đọc tất cả SMS (không xoá)
-                        out.write("AT+CMGL=\"ALL\"\r".getBytes(StandardCharsets.US_ASCII));
-                        out.flush();
+                    out.write("AT+CNMI=2,1,0,0,0\r".getBytes(StandardCharsets.US_ASCII));
+                    // URC: báo +CMTI khi có SMS mới
+                    out.flush();
+                    Thread.sleep(500);
 
-                        byte[] buf = new byte[8192];
+                    log.info("📡 Listener started on {} (waiting for SMS...)", sim.getComName());
+
+                    byte[] buf = new byte[8192];
+
+                    while (true) {
                         int len = in.read(buf);
                         if (len > 0) {
-                            String resp = new String(buf, 0, len, StandardCharsets.US_ASCII);
-                            log.debug("📥 Raw SMS buffer ({}):\n{}", sim.getComName(), resp);
+                            String resp = new String(buf, 0, len, StandardCharsets.US_ASCII).trim();
+                            if (resp.isEmpty()) continue;
 
-                            SmsMessageUser sms = SmsParser.parse(resp);
-                            if (sms != null) {
-                                log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
+                            log.debug("📥 Raw modem resp ({}):\n{}", sim.getComName(), resp);
 
-                                // Check DB xem SMS đã tồn tại chưa
-                                boolean exists = smsMessageRepository
-                                        .findByFromPhoneAndToPhoneAndMessage(
-                                                sms.getFrom(),
-                                                sim.getPhoneNumber(),
-                                                sms.getContent()
-                                        ).isPresent();
+                            // Nếu modem báo có SMS mới: +CMTI: "SM",index
+                            if (resp.contains("+CMTI")) {
+                                int index = extractSmsIndex(resp);
+                                if (index > 0) {
+                                    log.info("📥 New SMS notification on {} at index {}", sim.getComName(), index);
+                                    // Đọc SMS theo index
+                                    String cmd = "AT+CMGR=" + index + "\r";
+                                    out.write(cmd.getBytes(StandardCharsets.US_ASCII));
+                                    out.flush();
 
-                                if (!exists) {
-                                    // Lưu SMS mới vào DB
-                                    SmsMessage smsEntity = SmsMessage.builder()
-                                            .deviceName(sim.getDeviceName())
-                                            .fromPort(sim.getComName())
-                                            .fromPhone(sms.getFrom())
-                                            .toPhone(sim.getPhoneNumber())
-                                            .message(sms.getContent())
-                                            .modemResponse(resp)
-                                            .type("INBOUND")
-                                            .timestamp(Instant.now())
-                                            .build();
-
-                                    smsMessageRepository.save(smsEntity);
-
-                                    log.info("💾 Saved new SMS into DB: from={} to={} content={}",
-                                            sms.getFrom(), sim.getPhoneNumber(), sms.getContent());
-
-                                    // Forward OTP
-                                    routeMessage(sim, sms);
-                                } else {
-                                    log.debug("⚠️ Duplicate SMS ignored: {}", sms.getContent());
+                                    Thread.sleep(500);
+                                    int len2 = in.read(buf);
+                                    if (len2 > 0) {
+                                        String smsResp = new String(buf, 0, len2, StandardCharsets.US_ASCII);
+                                        processSmsResponse(sim, smsResp);
+                                    }
                                 }
+                            } else {
+                                // Fallback: có thể là kết quả của CMGL hoặc CMGR
+                                processSmsResponse(sim, resp);
                             }
                         }
 
-                        Thread.sleep(3000);
+                        Thread.sleep(2000);
 
                         // Nếu không còn session nào active => stop listener
                         if (activeSessions.getOrDefault(sim.getId(), List.of())
@@ -189,6 +180,43 @@ public class GsmListenerService {
                 runningListeners.remove(sim.getId());
             }
         }).start();
+    }
+    private void processSmsResponse(Sim sim, String resp) {
+        try {
+            SmsMessageUser sms = SmsParser.parse(resp);
+            if (sms != null) {
+                log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
+
+                boolean exists = smsMessageRepository
+                        .findByFromPhoneAndToPhoneAndMessage(
+                                sms.getFrom(),
+                                sim.getPhoneNumber(),
+                                sms.getContent()
+                        ).isPresent();
+
+                if (!exists) {
+                    SmsMessage smsEntity = SmsMessage.builder()
+                            .deviceName(sim.getDeviceName())
+                            .fromPort(sim.getComName())
+                            .fromPhone(sms.getFrom())
+                            .toPhone(sim.getPhoneNumber())
+                            .message(sms.getContent())
+                            .modemResponse(resp)
+                            .type("INBOUND")
+                            .timestamp(Instant.now())
+                            .build();
+
+                    smsMessageRepository.save(smsEntity);
+                    log.info("💾 Saved new SMS to DB and forwarding...");
+
+                    routeMessage(sim, sms);
+                } else {
+                    log.debug("⚠️ Duplicate SMS ignored: {}", sms.getContent());
+                }
+            }
+        } catch (Exception e) {
+            log.error("❌ Error processing SMS: {}", e.getMessage(), e);
+        }
     }
 
     /** Lấy index tin nhắn từ raw response */
