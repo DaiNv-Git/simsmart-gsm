@@ -24,6 +24,7 @@ import org.springframework.web.socket.sockjs.client.Transport;
 import org.springframework.web.socket.sockjs.client.WebSocketTransport;
 
 import java.lang.reflect.Type;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
@@ -34,7 +35,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class RemoteSubscriberConfig {
 
     private static final String REMOTE_WS_URL = "ws://72.60.41.168:9090/ws";
-    private static final String SUB_TOPIC = "/topic/send-otp";  
+    private static final String SUB_TOPIC = "/topic/send-otp";
     private static final ObjectMapper mapper = new ObjectMapper();
 
     private final AtomicReference<StompSession> stompSessionRef = new AtomicReference<>();
@@ -86,28 +87,41 @@ public class RemoteSubscriberConfig {
         session.subscribe(SUB_TOPIC, new StompFrameHandler() {
             @Override
             public Type getPayloadType(StompHeaders headers) {
-                return Object.class;
+                return Object.class; // nhận payload raw
             }
 
             @Override
             public void handleFrame(StompHeaders headers, Object payload) {
                 try {
-                    log.info("📩 [REMOTE MESSAGE] Received from {} -> {}", SUB_TOPIC, payload);
+                    String json;
+                    if (payload instanceof byte[]) {
+                        json = new String((byte[]) payload, StandardCharsets.UTF_8);
+                    } else {
+                        json = payload.toString();
+                    }
 
-                    // parse payload JSON thành RentSimRequest
-                    RentSimRequest req = mapper.convertValue(payload, RentSimRequest.class);
+                    log.info("📩 Raw JSON from broker: {}", json);
 
-                    Sim sim = simRepository.findByPhoneNumber(req.getSim())
+                    RentSimRequest req = mapper.readValue(json, RentSimRequest.class);
+                    log.info("✅ Parsed RentSimRequest: {}", req);
+
+                    // TODO: xử lý luồng tiếp theo, ví dụ gọi gsmListenerService.rentSim(...)
+                    Sim sim = simRepository.findById(req.getSim())
                             .orElseThrow(() -> new RuntimeException("SIM not found: " + req.getSim()));
 
                     Country country = countryRepository.findByCountryCode(req.getCountryCode())
                             .orElseThrow(() -> new RuntimeException("Country not found: " + req.getCountryCode()));
 
-                    // gọi service xử lý
-                    gsmListenerService.rentSim(sim, req.getAccountId(), req.getServiceCodeList(), req.getRentDuration(), country);
+                    gsmListenerService.rentSim(
+                            sim,
+                            req.getAccountId(),
+                            req.getServiceCodeList(),
+                            req.getRentDuration(),
+                            country
+                    );
 
                 } catch (Exception e) {
-                    log.error("❌ Error processing message from {}: {}", SUB_TOPIC, e.getMessage(), e);
+                    log.error("❌ Error parsing payload: {}", e.getMessage(), e);
                 }
             }
         });
