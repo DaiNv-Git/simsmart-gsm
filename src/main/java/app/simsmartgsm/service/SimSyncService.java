@@ -84,30 +84,24 @@ public class SimSyncService {
 
     /** Scan 1 port với retry, chỉ cần có CCID */
     private ScannedSim scanOnePort(String com) {
-        for (int attempt = 1; attempt <= 3; attempt++) {
-            ScannedSim result = portManager.withPort(com, helper -> {
-                try {
-                    String ccid = helper.getCcid();
-                    String imsi = helper.getImsi();
-                    String phone = helper.getCnum();
+        return portManager.withPort(com, helper -> {
+            try {
+                String ccid = helper.getCcid();
+                String imsi = helper.getImsi();
+                String phone = helper.getCnum();
 
-                    if (ccid == null || ccid.isBlank()) {
-                        log.debug("❌ {} bỏ qua vì không lấy được CCID", com);
-                        return null;
-                    }
-
-                    log.info("✅ {} -> ccid={} imsi={} phone={}", com, ccid, imsi, phone);
-                    return new ScannedSim(com, ccid, imsi, phone, detectProvider(imsi));
-                } catch (Exception ex) {
-                    log.warn("❌ Lỗi khi scan {}: {}", com, ex.getMessage());
+                if (ccid == null || ccid.isBlank()) {
+                    log.debug("❌ {} bỏ qua vì không lấy được CCID", com);
                     return null;
                 }
-            }, 5000L);
 
-            if (result != null) return result;
-            log.debug("🔄 Retry {}/3 cho port {}", attempt, com);
-        }
-        return null;
+                log.info("✅ {} -> ccid={} imsi={} phone={}", com, ccid, imsi, phone);
+                return new ScannedSim(com, ccid, imsi, phone, detectProvider(imsi));
+            } catch (Exception ex) {
+                log.warn("❌ Lỗi khi scan {}: {}", com, ex.getMessage());
+                return null;
+            }
+        }, 5000L);
     }
 
     // ================== DB SYNC ==================
