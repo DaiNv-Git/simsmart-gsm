@@ -46,19 +46,24 @@ public class GsmListenerService {
             startListener(sim);
         }
 
-        // Test gửi OTP từ cổng khác
         final String receiverPort = sim.getComName();
         final String senderPort = pickSenderPort(receiverPort);
+
         for (String service : services) {
             new Thread(() -> {
                 try {
-                    Thread.sleep(2000);
-                    String otp = generateOtp(6);
-                    String msg = service.toUpperCase() + " OTP " + otp;
+                    for (int i = 1; i <= 2; i++) {   // ✅ chỉ gửi 3 lần
+                        Thread.sleep(2000); // đợi trước mỗi lần gửi
 
-                    log.info("📤 Sending test SMS from {} -> {}: [{}]", senderPort, sim.getPhoneNumber(), msg);
-                    boolean ok = smsSenderService.sendSms(senderPort, sim.getPhoneNumber(), msg);
-                    log.info("📤 Auto test SMS [{}] sent to {} result={}", msg, sim.getPhoneNumber(), ok);
+                        String otp = generateOtp(6);
+                        String msg = service.toUpperCase() + " OTP " + otp;
+
+                        log.info("📤 [TEST {}] Sending SMS from {} -> {}: [{}]",
+                                i, senderPort, sim.getPhoneNumber(), msg);
+
+                        boolean ok = smsSenderService.sendSms(senderPort, sim.getPhoneNumber(), msg);
+                        log.info("📤 [TEST {}] Result: {}", i, ok);
+                    }
                 } catch (Exception e) {
                     log.error("❌ Error auto-sending SMS: {}", e.getMessage(), e);
                 }
@@ -67,7 +72,7 @@ public class GsmListenerService {
     }
 
     private String pickSenderPort(String receiverPort) {
-        String configured = "COM111"; // cấu hình sẵn 1 port gửi test
+        String configured = "COM110"; // cấu hình sẵn 1 port gửi test
         if (configured != null && !configured.equalsIgnoreCase(receiverPort)) {
             return configured;
         }
