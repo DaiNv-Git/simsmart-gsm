@@ -11,5 +11,7 @@ import java.util.Optional;
 public interface SmsMessageRepository extends MongoRepository<SmsMessage, Long> {
     Page<SmsMessage> findByTypeAndDeviceName(String type,String deviceName, Pageable pageable);
     Optional<SmsMessage> findByFromPhoneAndToPhoneAndMessage(String fromPhone, String toPhone, String message);
+    Optional<SmsMessage> findByFromPhoneAndToPhoneAndMessageAndType(
+            String fromPhone, String toPhone, String message, String type);
 
 }

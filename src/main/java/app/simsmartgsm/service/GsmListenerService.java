@@ -154,12 +154,13 @@ public class GsmListenerService {
             
                 log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
 
-                boolean exists = smsMessageRepository
-                        .findByFromPhoneAndToPhoneAndMessage(
-                                sms.getFrom(),
-                                sim.getPhoneNumber(),
-                                sms.getContent()
-                        ).isPresent();
+            boolean exists = smsMessageRepository
+                    .findByFromPhoneAndToPhoneAndMessageAndType(
+                            sms.getFrom(),
+                            sim.getPhoneNumber(),
+                            sms.getContent(),
+                            "INBOUND"
+                    ).isPresent();
 
                 if (!exists) {
                     SmsMessage smsEntity = SmsMessage.builder()
