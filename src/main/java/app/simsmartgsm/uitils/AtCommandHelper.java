@@ -444,7 +444,24 @@ public class AtCommandHelper implements AutoCloseable {
         return name.isBlank() ? port.getSystemPortName() : name;
     }
 
+    public String readAvailable(int timeoutMs) throws Exception {
+        StringBuilder sb = new StringBuilder();
+        byte[] buffer = new byte[1024];
+        long start = System.currentTimeMillis();
 
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            if (in.available() > 0) {
+                int len = in.read(buffer);
+                if (len > 0) {
+                    sb.append(new String(buffer, 0, len, StandardCharsets.US_ASCII));
+                }
+            } else {
+                Thread.sleep(100); // tránh busy loop
+            }
+        }
+
+        return sb.toString().trim();
+    }
     public static class SmsRecord {
         public Integer index;     // CMGL index
         public String status;     // REC READ / REC UNREAD / ...

@@ -212,26 +212,28 @@ public class GsmListenerService {
             for (String service : s.getServices()) {
                 String serviceNorm = normalize(service);
                 if (contentNorm.contains(serviceNorm) && containsOtp(sms.getContent())) {
-                    forwarded |= forwardToSocket(sim, s, service, sms);
-                } else {
-                    log.debug("❌ Not matched service='{}' content='{}'", service, sms.getContent());
+                    forwarded = forwardToSocket(sim, s, service, sms) || forwarded;
                 }
             }
         }
 
+        // ❌ bỏ fallback reuse service sai
         if (!forwarded && containsOtp(sms.getContent())) {
-            RentSession firstActive = sessions.stream().filter(RentSession::isActive).findFirst().orElse(null);
+            log.warn("⚠️ OTP found but no matching service for SMS='{}'", sms.getContent());
+
+            RentSession firstActive = sessions.stream()
+                    .filter(RentSession::isActive)
+                    .findFirst()
+                    .orElse(null);
+
             if (firstActive != null) {
-                String service = firstActive.getServices().isEmpty() ? "UNKNOWN" : firstActive.getServices().get(0);
-                log.info("↪️ Fallback forward with service='{}' (no exact match).", service);
-                forwardToSocket(sim, firstActive, service, sms);
-            } else {
-                log.warn("⚠️ Has OTP but no active session to forward.");
+                forwardToSocket(sim, firstActive, "UNKNOWN", sms); // mark rõ UNKNOWN
             }
         }
 
         sessions.removeIf(s -> !s.isActive());
     }
+
 
     private boolean forwardToSocket(Sim sim, RentSession s, String service, SmsMessageUser sms) {
         String otp = extractOtp(sms.getContent());

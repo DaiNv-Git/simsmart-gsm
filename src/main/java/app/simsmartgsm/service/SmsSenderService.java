@@ -128,6 +128,77 @@ public class SmsSenderService {
 
         return smsRepo.save(saved);
     }
+    public SmsMessage sendOne(String portName, String phoneNumber, String text, boolean saveToDb) {
+        String status = "FAIL";
+        StringBuilder resp = new StringBuilder();
+        String fromPhone = "unknown";
+
+        for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
+            SerialPort port = null;
+            try {
+                port = openPort(portName);
+
+                try (OutputStream out = port.getOutputStream();
+                     InputStream in = port.getInputStream();
+                     Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
+
+                    // Lấy số SIM gửi
+                    fromPhone = getSimPhoneNumber(out, scanner);
+
+                    sendCmd(out, "AT+CMGF=1");
+                    sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
+
+                    Thread.sleep(500); // chờ dấu '>'
+
+                    out.write(text.getBytes(StandardCharsets.US_ASCII));
+                    out.write(0x1A);
+                    out.flush();
+
+                    long start = System.currentTimeMillis();
+                    while (System.currentTimeMillis() - start < 7000 && scanner.hasNextLine()) {
+                        String line = scanner.nextLine().trim();
+                        if (!line.isEmpty()) {
+                            resp.append(line).append("\n");
+                            if (line.contains("OK") || line.contains("+CMGS")) {
+                                status = "OK";
+                                break;
+                            }
+                            if (line.contains("ERROR")) {
+                                status = "FAIL";
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("⚠️ Lỗi gửi SMS lần {}/{} qua {} -> {}: {}", attempt, MAX_RETRY, portName, phoneNumber, e.getMessage());
+            } finally {
+                if (port != null && port.isOpen()) port.closePort();
+            }
+
+            if ("OK".equals(status)) break;
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException ignored) {}
+        }
+
+        SmsMessage saved = SmsMessage.builder()
+                .deviceName(getDeviceName())
+                .fromPort(portName)
+                .fromPhone(fromPhone)
+                .toPhone(phoneNumber)
+                .message(text)
+                .type(status.equals("OK") ? "OUTBOUND" : "OUTBOUND_FAIL") // đánh dấu rõ outbound
+                .modemResponse(resp.toString().trim())
+                .timestamp(Instant.now())
+                .build();
+
+        if (saveToDb) {
+            return smsRepo.save(saved);
+        } else {
+            return saved;
+        }
+    }
 
     // === Gửi nhiều số cùng 1 nội dung ===
     public List<SmsMessage> sendBulk(List<String> phones, String text, String portName) {
@@ -152,6 +223,6 @@ public class SmsSenderService {
 
     // === Shortcut: gửi 1 SMS không lưu DB (cho test nhanh) ===
     public boolean sendSms(String comName, String phoneNumber, String message) {
-        return "OK".equals(sendOne(comName, phoneNumber, message).getType());
+        return "OK".equals(sendOne(comName, phoneNumber, message,false).getType());
     }
 }

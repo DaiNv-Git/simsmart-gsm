@@ -14,17 +14,8 @@ import java.util.function.Function;
 @Component
 @Slf4j
 public class PortManager {
-    // Khóa cho từng COM để tránh race condition
     private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
 
-    /**
-     * Mở port an toàn với lock và thực thi task.
-     * Có retry + delay để hạn chế false error khi port chưa sẵn sàng.
-     *
-     * @param com       Tên cổng COM
-     * @param task      Logic với AtCommandHelper
-     * @param timeoutMs Timeout chờ lock
-     */
     public <T> T withPort(String com, Function<AtCommandHelper, T> task, long timeoutMs) {
         ReentrantLock lock = locks.computeIfAbsent(com, k -> new ReentrantLock());
         boolean acquired = false;
@@ -32,14 +23,12 @@ public class PortManager {
         for (int attempt = 1; attempt <= 3; attempt++) {
             SerialPort port = null;
             try {
-                // 1. Cố gắng lấy lock
                 acquired = lock.tryLock(timeoutMs, TimeUnit.MILLISECONDS);
                 if (!acquired) {
-                    log.debug("⏳ Không lấy được lock cho {} trong {}ms", com, timeoutMs);
+                    log.warn("⏳ Không lấy được lock cho {} trong {}ms", com, timeoutMs);
                     return null;
                 }
 
-                // 2. Cấu hình Port
                 port = SerialPort.getCommPort(com);
                 port.setBaudRate(115200);
                 port.setComPortTimeouts(
@@ -48,44 +37,35 @@ public class PortManager {
                         3000
                 );
 
-                // 3. Mở Port
                 if (!port.openPort()) {
-                    log.warn("❌ KHÔNG THỂ MỞ CỔNG {} (thử {}/{})", com, attempt, 3);
-                    safeSleep(1000); // nghỉ 1s rồi thử lại
+                    log.error("❌ KHÔNG THỂ MỞ CỔNG {} (thử {}/{})", com, attempt, 3);
+                    safeSleep(1000);
                     continue;
                 }
 
-                // Delay nhỏ cho modem sẵn sàng
-                safeSleep(500);
+                safeSleep(300);
 
                 try (AtCommandHelper helper = new AtCommandHelper(port)) {
-                    // 4. Flush input
-                    helper.flushInput();
-
-                    // 5. Kiểm tra AT cơ bản
+                    // kiểm tra AT cơ bản
                     String atResp = helper.sendAndRead("AT", 2000);
                     if (atResp == null || !atResp.contains("OK")) {
-                        log.warn("❌ {} không phản hồi AT OK (thử {}/{})", com, attempt, 3);
+                        log.warn("⚠️ {} không phản hồi AT OK (thử {}/{})", com, attempt, 3);
                         safeSleep(1000);
-                        continue; // retry
+                        continue;
                     }
 
-                    // 6. Cấu hình cho SMS (Text Mode)
+                    // cấu hình SMS
                     helper.sendAndRead("AT+CMGF=1", 2000);
                     helper.sendAndRead("AT+CPMS=\"SM\",\"SM\",\"SM\"", 2000);
                     helper.sendAndRead("AT+CSCS=\"GSM\"", 2000);
-                    helper.sendAndRead("AT+CSMP=17,167,0,0", 2000);
 
-                    // 7. Chạy logic chính
                     return task.apply(helper);
                 } finally {
-                    if (port.isOpen()) {
-                        port.closePort();
-                    }
+                    if (port.isOpen()) port.closePort();
                 }
 
             } catch (Exception e) {
-                log.error("❌ Lỗi khi thao tác với {} (thử {}/{}): {}", com, attempt, 3, e.getMessage());
+                log.error("❌ Lỗi thao tác với {} (thử {}/{}): {}", com, attempt, 3, e.getMessage());
                 safeSleep(1000);
             } finally {
                 if (acquired) {
