@@ -7,6 +7,7 @@ import app.simsmartgsm.entity.Country;
 import app.simsmartgsm.entity.Sim;
 import app.simsmartgsm.entity.SmsMessage;
 import app.simsmartgsm.repository.SmsMessageRepository;
+import app.simsmartgsm.uitils.AtCommandHelper;
 import com.fazecast.jSerialComm.SerialPort;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -95,6 +96,7 @@ public class GsmListenerService {
 
 
     // === Start listener on COM ===
+    // === Start listener on COM ===
     private void startListener(Sim sim) {
         if (!runningListeners.add(sim.getId())) {
             log.info("Listener already running for sim {}", sim.getId());
@@ -106,29 +108,23 @@ public class GsmListenerService {
                 log.info("📡 Listener starting on {}...", sim.getComName());
 
                 while (true) {
-                    // Dùng PortManager để đảm bảo an toàn khi mở cổng
                     portManager.withPort(sim.getComName(), helper -> {
                         try {
-                            // cấu hình modem 1 lần khi mở port
-                            helper.sendAndRead("AT+CMGF=1", 2000);
-                            helper.sendAndRead("AT+CNMI=2,1,0,0,0", 2000);
-
-                            // Đọc inbox (có thể thay bằng AT+CMGL="REC UNREAD")
                             String resp = helper.sendAndRead("AT+CMGL=\"ALL\"", 5000);
-
                             if (resp != null && !resp.isBlank()) {
-                                log.debug("📥 Raw SMS buffer ({}):\n{}", sim.getComName(), resp);
+                                log.info("📥 Raw SMS: {}", resp);
                                 processSmsResponse(sim, resp);
                             }
                         } catch (Exception e) {
-                            log.error("❌ Error reading SMS on {}: {}", sim.getComName(), e.getMessage());
+                            log.error("❌ Error on {}: {}", sim.getComName(), e.getMessage());
                         }
                         return null;
                     }, 5000L);
 
-                    Thread.sleep(3000);
 
-                    // Nếu không còn session nào active => stop listener
+                    Thread.sleep(2000);
+
+                    // nếu hết session thì dừng listener
                     if (activeSessions.getOrDefault(sim.getId(), List.of())
                             .stream().noneMatch(RentSession::isActive)) {
                         log.info("🛑 No active sessions, stopping listener for sim {}", sim.getId());
@@ -140,19 +136,20 @@ public class GsmListenerService {
                 log.error("❌ Listener error on {}: {}", sim.getComName(), e.getMessage(), e);
                 runningListeners.remove(sim.getId());
             }
-        }).start();
+        }, "listener-" + sim.getComName()).start();
     }
+
 
     private void processSmsResponse(Sim sim, String resp) {
         try {
             SmsMessageUser sms = SmsParser.parse(resp);
 
             if (sms == null) {
-                log.debug("⚠️ No valid SMS parsed from resp on {}: {}", sim.getComName(), resp.replace("\r","").replace("\n"," "));
+                log.debug("⚠️ No valid SMS parsed on {}: {}", sim.getComName(), resp.replace("\r"," ").replace("\n"," "));
                 return;
             }
 
-            log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
+            log.info("✅ Parsed SMS from={} content={}", sms.getFrom(), sms.getContent());
 
             boolean exists = smsMessageRepository
                     .findByFromPhoneAndToPhoneAndMessageAndType(
@@ -185,6 +182,7 @@ public class GsmListenerService {
             log.error("❌ Error processing SMS: {}", e.getMessage(), e);
         }
     }
+
 
     /** Lấy index tin nhắn từ +CMTI hoặc +CMGL */
     private int extractSmsIndex(String resp) {
