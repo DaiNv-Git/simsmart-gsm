@@ -60,7 +60,7 @@ public class SmsSenderService {
         return "unknown";
     }
 
-    // === Core: gửi 1 SMS có retry + lưu DB ===
+
     public SmsMessage sendOne(String portName, String phoneNumber, String text) {
         String status = "FAIL";
         StringBuilder resp = new StringBuilder();
