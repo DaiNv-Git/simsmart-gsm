@@ -1,5 +1,6 @@
 package app.simsmartgsm.dto.request;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
 
 import java.util.List;
@@ -12,6 +13,7 @@ import java.util.Arrays;
 import java.util.List;
 
 @Data
+@JsonIgnoreProperties(ignoreUnknown = true) // ✅ Bỏ qua field không map
 public class RentSimRequest {
 
     @JsonProperty("comNumber")
@@ -19,6 +21,8 @@ public class RentSimRequest {
 
     @JsonProperty("customerId")
     private Long accountId;
+    @JsonProperty("phoneNumber")
+    private String phoneNumber;
 
     @JsonProperty("serviceCode")
     private String serviceCodeCsv;  // ví dụ: "FB,GOOGLE"
