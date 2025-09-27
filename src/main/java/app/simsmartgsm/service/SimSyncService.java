@@ -1,7 +1,9 @@
 package app.simsmartgsm.service;
 
 import app.simsmartgsm.entity.Sim;
+
 import app.simsmartgsm.repository.SimRepository;
+import app.simsmartgsm.uitils.SimStatus;
 import com.fazecast.jSerialComm.SerialPort;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,9 +27,10 @@ public class SimSyncService {
     // ==== CONFIG ====
     private static final int THREAD_POOL_SIZE = 8;
     private static final long SCAN_TIMEOUT_MIN = 1;
-    private static final int MISS_THRESHOLD = 3;
+    private static final int MISS_THRESHOLD = 8;      // nhiều lần mới replace
+    private static final int INACTIVE_THRESHOLD = 3;  // vài lần đầu inactive
 
-    // chạy mỗi 100 giây
+    // chạy mỗi 60 giây
     @Scheduled(fixedRate = 60_000)
     public void scheduledFullScan() {
         try {
@@ -79,26 +82,32 @@ public class SimSyncService {
         return scanned;
     }
 
-    /** Scan 1 port: chỉ trả về nếu có số điện thoại */
+    /** Scan 1 port với retry, chỉ cần có CCID */
     private ScannedSim scanOnePort(String com) {
-        return portManager.withPort(com, helper -> {
-            try {
-                String ccid = helper.getCcid();
-                String imsi = helper.getImsi();
-                String phone = helper.getCnum();
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            ScannedSim result = portManager.withPort(com, helper -> {
+                try {
+                    String ccid = helper.getCcid();
+                    String imsi = helper.getImsi();
+                    String phone = helper.getCnum();
 
-                if (ccid == null || phone == null || phone.isBlank()) {
-                    log.debug("❌ {} bỏ qua vì không lấy được CCID hoặc số", com);
+                    if (ccid == null || ccid.isBlank()) {
+                        log.debug("❌ {} bỏ qua vì không lấy được CCID", com);
+                        return null;
+                    }
+
+                    log.info("✅ {} -> ccid={} imsi={} phone={}", com, ccid, imsi, phone);
+                    return new ScannedSim(com, ccid, imsi, phone, detectProvider(imsi));
+                } catch (Exception ex) {
+                    log.warn("❌ Lỗi khi scan {}: {}", com, ex.getMessage());
                     return null;
                 }
+            }, 5000L);
 
-                log.info("✅ {} -> ccid={} imsi={} phone={}", com, ccid, imsi, phone);
-                return new ScannedSim(com, ccid, imsi, phone, detectProvider(imsi));
-            } catch (Exception ex) {
-                log.warn("❌ Lỗi khi scan {}: {}", com, ex.getMessage());
-                return null;
-            }
-        }, 3000L);
+            if (result != null) return result;
+            log.debug("🔄 Retry {}/3 cho port {}", attempt, com);
+        }
+        return null;
     }
 
     // ================== DB SYNC ==================
@@ -123,12 +132,12 @@ public class SimSyncService {
                             .deviceName(deviceName)
                             .comName(ss.comName)
                             .missCount(0)
-                            .status("active")
+                            .status(String.valueOf(SimStatus.ACTIVE))
                             .build()
             );
 
             sim.setMissCount(0);
-            sim.setStatus("active");
+            sim.setStatus(String.valueOf(SimStatus.ACTIVE));
             sim.setImsi(ss.imsi);
             sim.setComName(ss.comName);
             sim.setPhoneNumber(ss.phoneNumber);
@@ -144,10 +153,15 @@ public class SimSyncService {
                 db.setMissCount(db.getMissCount() + 1);
 
                 if (db.getMissCount() >= MISS_THRESHOLD) {
-                    db.setStatus("replaced");
+                    db.setStatus(String.valueOf(SimStatus.REPLACED));
                     log.info("⚠️ SIM {} (com={}) chuyển sang REPLACED sau {} lần không thấy",
                             db.getCcid(), db.getComName(), db.getMissCount());
+                } else if (db.getMissCount() >= INACTIVE_THRESHOLD) {
+                    db.setStatus(String.valueOf(SimStatus.INACTIVE));
+                    log.info("⏸️ SIM {} (com={}) chuyển sang INACTIVE (miss={})",
+                            db.getCcid(), db.getComName(), db.getMissCount());
                 }
+
                 db.setLastUpdated(Instant.now());
                 toSave.add(db);
             }
@@ -169,7 +183,7 @@ public class SimSyncService {
         for (ScannedSim s : scanned) {
             sb.append(String.format("%-8s %-8s %-15s %-15s %-20s\n",
                     s.comName,
-                    "ACTIVE",
+                    SimStatus.ACTIVE,
                     (s.simProvider != null ? s.simProvider : ""),
                     (s.phoneNumber != null ? s.phoneNumber : ""),
                     (s.ccid != null ? s.ccid : "")));
