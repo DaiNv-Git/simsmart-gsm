@@ -26,7 +26,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @RequiredArgsConstructor
 @Slf4j
 public class GsmListenerService {
-
+    private final SmsSenderService smsSenderService;
     private final SimpMessagingTemplate messagingTemplate;
 
     // Map quản lý session thuê: simId -> list session
@@ -95,8 +95,28 @@ public class GsmListenerService {
         RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes, country);
         activeSessions.computeIfAbsent(sim.getId(), k -> new CopyOnWriteArrayList<>()).add(session);
         log.info("Added rent session: {}", session);
-        simulateSmsForSession(sim, session);
+
+        // bật listener thật nếu chưa chạy
+        if (!runningListeners.contains(sim.getId())) {
+            startListener(sim);
+        }
+
+        for (String service : services) {
+            new Thread(() -> {
+                try {
+                    Thread.sleep(2000); 
+                    String otp = String.valueOf(100000 + new Random().nextInt(900000)); // 6 số
+                    String msg = service.toUpperCase() + " OTP " + otp;
+                    boolean ok = smsSenderService.sendSms("COM72", sim.getPhoneNumber(), msg);
+                    log.info("📤 Auto test SMS [{}] sent to {} from COM72 result={}", msg, sim.getPhoneNumber(), ok);
+                } catch (Exception e) {
+                    log.error("Error auto-sending SMS for service {}: {}", service, e.getMessage());
+                }
+            }).start();
+        }
     }
+
+
 
     // Route SMS tới đúng KH thuê dịch vụ
     private void routeMessage(Sim sim, SmsMessageUser sms) {
@@ -126,7 +146,7 @@ public class GsmListenerService {
                     wsMessage.put("smsContent", sms.getContent());
                     wsMessage.put("fromNumber", sms.getFrom());
 
-                    messagingTemplate.convertAndSend("/topic/send-otp", wsMessage);
+                    messagingTemplate.convertAndSend("/topic/receive-otp", wsMessage);
                     log.info("Forwarded SMS [{}] to customer {} (services={})",
                             sms.getContent(), s.getAccountId(), s.getServices());
                 }
@@ -135,7 +155,6 @@ public class GsmListenerService {
 
         sessions.removeIf(s -> !s.isActive());
     }
-    // Start cuộc gọi (song song với listener)
     public void startCall(Sim sim, String targetNumber, int durationSec) {
         new Thread(() -> {
             try {

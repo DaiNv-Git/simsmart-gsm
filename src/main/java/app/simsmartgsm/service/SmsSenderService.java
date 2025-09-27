@@ -4,8 +4,7 @@ import app.simsmartgsm.entity.SmsMessage;
 import app.simsmartgsm.repository.SmsMessageRepository;
 import com.fazecast.jSerialComm.SerialPort;
 import lombok.RequiredArgsConstructor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
@@ -15,12 +14,11 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
-
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class SmsSenderService {
 
-    private static final Logger log = LoggerFactory.getLogger(SmsSenderService.class);
     private final SmsMessageRepository smsRepo;
     private static final int MAX_RETRY = 3;
 
@@ -35,9 +33,7 @@ public class SmsSenderService {
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);
-        port.setComPortTimeouts(
-                SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000
-        );
+        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
         if (!port.openPort()) throw new RuntimeException("❌ Không thể mở cổng " + portName);
         return port;
     }
@@ -49,31 +45,23 @@ public class SmsSenderService {
         Thread.sleep(200);
     }
 
-    private String getSimPhoneNumber(SerialPort port) {
-        String phone = "unknown";
-        try (OutputStream out = port.getOutputStream();
-             InputStream in = port.getInputStream();
-             Scanner sc = new Scanner(in, StandardCharsets.US_ASCII)) {
-
-            sendCmd(out, "AT+CNUM");
-            long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < 2000 && sc.hasNextLine()) {
-                String line = sc.nextLine().trim();
-                if (line.contains("+CNUM")) {
-                    String[] parts = line.split(",");
-                    if (parts.length >= 2) {
-                        phone = parts[1].replace("\"", "").trim();
-                        break;
-                    }
+    private String getSimPhoneNumber(OutputStream out, Scanner sc) throws Exception {
+        sendCmd(out, "AT+CNUM");
+        long start = System.currentTimeMillis();
+        while (System.currentTimeMillis() - start < 2000 && sc.hasNextLine()) {
+            String line = sc.nextLine().trim();
+            if (line.contains("+CNUM")) {
+                String[] parts = line.split(",");
+                if (parts.length >= 2) {
+                    return parts[1].replace("\"", "").trim();
                 }
             }
-        } catch (Exception e) {
-            log.warn("⚠️ Không lấy được số điện thoại SIM ở {}: {}", port.getSystemPortName(), e.getMessage());
         }
-        return phone;
+        return "unknown";
     }
 
-    private SmsMessage sendOne(String portName, String phoneNumber, String text) {
+    // === Core: gửi 1 SMS có retry + lưu DB ===
+    public SmsMessage sendOne(String portName, String phoneNumber, String text) {
         String status = "FAIL";
         StringBuilder resp = new StringBuilder();
         String fromPhone = "unknown";
@@ -83,12 +71,12 @@ public class SmsSenderService {
             try {
                 port = openPort(portName);
 
-                // lấy số điện thoại của SIM gửi
-                fromPhone = getSimPhoneNumber(port);
-
                 try (OutputStream out = port.getOutputStream();
                      InputStream in = port.getInputStream();
                      Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
+
+                    // Lấy số SIM gửi
+                    fromPhone = getSimPhoneNumber(out, scanner);
 
                     sendCmd(out, "AT+CMGF=1");
                     sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
@@ -104,7 +92,7 @@ public class SmsSenderService {
                         String line = scanner.nextLine().trim();
                         if (!line.isEmpty()) {
                             resp.append(line).append("\n");
-                            if (line.contains("OK")) {
+                            if (line.contains("OK") || line.contains("+CMGS")) {
                                 status = "OK";
                                 break;
                             }
@@ -118,10 +106,10 @@ public class SmsSenderService {
             } catch (Exception e) {
                 log.warn("⚠️ Lỗi gửi SMS lần {}/{} qua {} -> {}: {}", attempt, MAX_RETRY, portName, phoneNumber, e.getMessage());
             } finally {
-                if (port != null) port.closePort();
+                if (port != null && port.isOpen()) port.closePort();
             }
 
-            if ("OK".equals(status)) break; 
+            if ("OK".equals(status)) break;
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException ignored) {}
@@ -130,7 +118,7 @@ public class SmsSenderService {
         SmsMessage saved = SmsMessage.builder()
                 .deviceName(getDeviceName())
                 .fromPort(portName)
-                .fromPhone(fromPhone)   // số điện thoại SIM gửi
+                .fromPhone(fromPhone)
                 .toPhone(phoneNumber)
                 .message(text)
                 .type(status) // OK hoặc FAIL
@@ -141,19 +129,13 @@ public class SmsSenderService {
         return smsRepo.save(saved);
     }
 
-    // Gửi nhiều số điện thoại 1 nội dung
-    public List<SmsMessage> sendBulk(List<String> phones, String text) {
-        SerialPort[] ports = SerialPort.getCommPorts();
-        if (ports.length == 0) throw new RuntimeException("Không tìm thấy port nào khả dụng");
-
-        ExecutorService exec = Executors.newFixedThreadPool(Math.min(phones.size(), ports.length));
+    // === Gửi nhiều số cùng 1 nội dung ===
+    public List<SmsMessage> sendBulk(List<String> phones, String text, String portName) {
+        ExecutorService exec = Executors.newFixedThreadPool(phones.size());
         List<Future<SmsMessage>> futures = new ArrayList<>();
         List<SmsMessage> results = new ArrayList<>();
 
-        int idx = 0;
         for (String phone : phones) {
-            String portName = ports[idx % ports.length].getSystemPortName(); // round-robin
-            idx++;
             futures.add(exec.submit(() -> sendOne(portName, phone, text)));
         }
 
@@ -166,5 +148,10 @@ public class SmsSenderService {
         }
         exec.shutdown();
         return results;
+    }
+
+    // === Shortcut: gửi 1 SMS không lưu DB (cho test nhanh) ===
+    public boolean sendSms(String comName, String phoneNumber, String message) {
+        return "OK".equals(sendOne(comName, phoneNumber, message).getType());
     }
 }

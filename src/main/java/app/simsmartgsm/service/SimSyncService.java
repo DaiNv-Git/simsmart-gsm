@@ -23,11 +23,12 @@ public class SimSyncService {
     private final PortManager portManager;
 
     // ==== CONFIG ====
-    private static final int THREAD_POOL_SIZE = 8;          
-    private static final long SCAN_TIMEOUT_MIN = 1;         
+    private static final int THREAD_POOL_SIZE = 8;
+    private static final long SCAN_TIMEOUT_MIN = 1;
     private static final int MISS_THRESHOLD = 3;
-    
-    @Scheduled(fixedRate = 100_000)
+
+    // chạy mỗi 100 giây
+    @Scheduled(fixedRate = 500_000)
     public void scheduledFullScan() {
         try {
             syncAndResolve();
@@ -111,6 +112,7 @@ public class SimSyncService {
         Set<String> scannedCcids = new HashSet<>();
         List<Sim> toSave = new ArrayList<>();
 
+        // ✅ 1. Các SIM đang thấy trong scan => ACTIVE
         for (ScannedSim ss : scanned) {
             if (ss.ccid == null) continue;
             scannedCcids.add(ss.ccid);
@@ -121,12 +123,9 @@ public class SimSyncService {
                             .deviceName(deviceName)
                             .comName(ss.comName)
                             .missCount(0)
-                            .status("new")
-                            .build());
-
-            if ("replaced".equals(sim.getStatus()) || "unhealthy".equals(sim.getStatus())) {
-                log.info("♻️ SIM {} (com={}) khôi phục -> active", ss.ccid, ss.comName);
-            }
+                            .status("active")
+                            .build()
+            );
 
             sim.setMissCount(0);
             sim.setStatus("active");
@@ -139,23 +138,24 @@ public class SimSyncService {
             toSave.add(sim);
         }
 
+        // ❌ 2. Các SIM trong DB nhưng lần này không thấy
         for (Sim db : dbSims) {
             if (db.getCcid() != null && !scannedCcids.contains(db.getCcid())) {
                 db.setMissCount(db.getMissCount() + 1);
 
-                if (db.getMissCount() >= MISS_THRESHOLD && "active".equals(db.getStatus())) {
+                if (db.getMissCount() >= MISS_THRESHOLD) {
                     db.setStatus("replaced");
-                    log.info("⚠️ SIM {} (com={}) đánh replaced sau {} lần không thấy",
+                    log.info("⚠️ SIM {} (com={}) chuyển sang REPLACED sau {} lần không thấy",
                             db.getCcid(), db.getComName(), db.getMissCount());
-                } else {
-                    log.debug("⏳ SIM {} (com={}) chưa thấy lần {}", db.getCcid(), db.getComName(), db.getMissCount());
                 }
                 db.setLastUpdated(Instant.now());
                 toSave.add(db);
             }
         }
 
-        if (!toSave.isEmpty()) simRepository.saveAll(toSave);
+        if (!toSave.isEmpty()) {
+            simRepository.saveAll(toSave);
+        }
     }
 
     // ================== HELPERS ==================
@@ -163,17 +163,16 @@ public class SimSyncService {
     private void logScanResult(String deviceName, List<ScannedSim> scanned) {
         StringBuilder sb = new StringBuilder();
         sb.append("\n=== Scan Result for ").append(deviceName).append(" ===\n");
-        sb.append(String.format("%-8s %-8s %-15s %-15s %-20s %-10s\n",
-                "COM", "Status", "SIM Provider", "Phone Number", "CCID", "Content"));
+        sb.append(String.format("%-8s %-8s %-15s %-15s %-20s\n",
+                "COM", "Status", "Provider", "Phone Number", "CCID"));
 
         for (ScannedSim s : scanned) {
-            sb.append(String.format("%-8s %-8s %-15s %-15s %-20s %-10s\n",
+            sb.append(String.format("%-8s %-8s %-15s %-15s %-20s\n",
                     s.comName,
-                    "SUCCESS",
+                    "ACTIVE",
                     (s.simProvider != null ? s.simProvider : ""),
                     (s.phoneNumber != null ? s.phoneNumber : ""),
-                    (s.ccid != null ? s.ccid : ""),
-                    "Registered"));
+                    (s.ccid != null ? s.ccid : "")));
         }
         log.info(sb.toString());
     }
@@ -186,6 +185,6 @@ public class SimSyncService {
         return "Unknown";
     }
 
-    // DTO scan tạm
+    // DTO tạm cho scan
     private record ScannedSim(String comName, String ccid, String imsi, String phoneNumber, String simProvider) {}
 }
