@@ -206,7 +206,7 @@ public class GsmListenerService {
         String contentNorm = normalize(sms.getContent());
         boolean forwarded = false;
 
-        for (RentSession s : sessions) {
+         for (RentSession s : sessions) {
             if (!s.isActive()) continue;
 
             for (String service : s.getServices()) {
