@@ -78,7 +78,7 @@ public class GsmListenerService {
     }
 
     private String pickSenderPort(String receiverPort) {
-        String configured = "COM71"; // cấu hình sẵn 1 port gửi test
+        String configured = "COM76"; // cấu hình sẵn 1 port gửi test
         if (configured != null && !configured.equalsIgnoreCase(receiverPort)) {
             return configured;
         }
