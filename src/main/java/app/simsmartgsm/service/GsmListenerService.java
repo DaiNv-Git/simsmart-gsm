@@ -96,6 +96,7 @@ public class GsmListenerService {
 
     // === Start listener on COM ===
     private void startListener(Sim sim) {
+        // add() sẽ return false nếu simId đã tồn tại => thread-safe hơn contains+add
         if (!runningListeners.add(sim.getId())) {
             log.info("Listener already running for sim {}", sim.getId());
             return;
@@ -113,30 +114,44 @@ public class GsmListenerService {
                 try (InputStream in = port.getInputStream();
                      OutputStream out = port.getOutputStream()) {
 
+                    // Cấu hình SMS text mode
                     out.write("AT+CMGF=1\r".getBytes(StandardCharsets.US_ASCII));
                     out.flush();
                     Thread.sleep(500);
 
                     while (true) {
-                        // 🔄 Đọc tất cả SMS thay vì chỉ unread
-                        out.write("AT+CMGL=\"ALL\"\r".getBytes(StandardCharsets.US_ASCII));
+                        // 🔄 Chỉ đọc tin chưa đọc
+                        out.write("AT+CMGL=\"REC UNREAD\"\r".getBytes(StandardCharsets.US_ASCII));
                         out.flush();
 
-                        byte[] buf = new byte[4096];
+                        byte[] buf = new byte[8192];
                         int len = in.read(buf);
                         if (len > 0) {
                             String resp = new String(buf, 0, len, StandardCharsets.US_ASCII);
-                            log.debug("📥 Raw SMS buffer: \n{}", resp);
+                            log.debug("📥 Raw SMS buffer ({}):\n{}", sim.getComName(), resp);
 
                             SmsMessageUser sms = SmsParser.parse(resp);
                             if (sms != null) {
                                 log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
+
+                                // Route OTP
                                 routeMessage(sim, sms);
+
+                                // Sau khi xử lý -> Xoá SMS khỏi bộ nhớ
+                                // Tìm chỉ số (index) tin nhắn từ resp
+                                int idx = extractSmsIndex(resp);
+                                if (idx > 0) {
+                                    String delCmd = "AT+CMGD=" + idx + "\r";
+                                    out.write(delCmd.getBytes(StandardCharsets.US_ASCII));
+                                    out.flush();
+                                    log.info("🗑️ Deleted SMS index {} from {}", idx, sim.getComName());
+                                }
                             }
                         }
 
                         Thread.sleep(3000);
 
+                        // Nếu không còn session nào active => stop listener
                         if (activeSessions.getOrDefault(sim.getId(), List.of())
                                 .stream().noneMatch(RentSession::isActive)) {
                             log.info("🛑 No active sessions, stopping listener for sim {}", sim.getId());
@@ -150,6 +165,19 @@ public class GsmListenerService {
                 runningListeners.remove(sim.getId());
             }
         }).start();
+    }
+
+    /** Lấy index tin nhắn từ raw response */
+    private int extractSmsIndex(String resp) {
+        try {
+            // Ví dụ: +CMGL: 1,"REC UNREAD","+819012345678",,"25/09/27,15:59:10+36"
+            Pattern p = Pattern.compile("\\+CMGL: (\\d+),");
+            Matcher m = p.matcher(resp);
+            if (m.find()) {
+                return Integer.parseInt(m.group(1));
+            }
+        } catch (Exception ignored) {}
+        return -1;
     }
 
     // === Route OTP tới remote broker ===
