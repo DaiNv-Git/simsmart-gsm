@@ -12,8 +12,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
 import org.springframework.messaging.simp.stomp.StompSession;
+import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -33,11 +33,12 @@ public class GsmListenerService {
 
     private final SmsSenderService smsSenderService;
     private final RemoteStompClientConfig remoteStompClientConfig;
-    
+
     private final SmsMessageRepository smsMessageRepository;
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
     private final Set<String> runningListeners = ConcurrentHashMap.newKeySet();
     private final Set<String> sentOtpSimIds = ConcurrentHashMap.newKeySet();
+
     // === Rent SIM session ===
     public void rentSim(Sim sim, Long accountId, List<String> services,
                         int durationMinutes, Country country) {
@@ -52,18 +53,15 @@ public class GsmListenerService {
         final String receiverPort = sim.getComName();
         final String senderPort = pickSenderPort(receiverPort);
 
-
-
         if (!services.isEmpty()) {
             String service = services.get(0);
-            String key = sim.getId() + ":" + service.toLowerCase(); // unique per sim+service
+            String key = sim.getId() + ":" + service.toLowerCase();
             if (sentOtpSimIds.add(key)) {
                 new Thread(() -> {
                     try {
                         Thread.sleep(2000);
-
                         String otp = generateOtp(6);
-                        String msg = service.toUpperCase() + " OTP " + otp;
+                        String msg = "[TEST] " + service.toUpperCase() + " OTP " + otp;
 
                         log.info("📤 [INIT TEST] Sending SMS from {} -> {}: [{}]",
                                 senderPort, sim.getPhoneNumber(), msg);
@@ -77,7 +75,6 @@ public class GsmListenerService {
             }
         }
     }
-
 
     private String pickSenderPort(String receiverPort) {
         String configured = "COM71"; // cấu hình sẵn 1 port gửi test
@@ -100,7 +97,6 @@ public class GsmListenerService {
     }
 
     // === Start listener on COM ===
-
     private void startListener(Sim sim) {
         if (!runningListeners.add(sim.getId())) {
             log.info("Listener already running for sim {}", sim.getId());
@@ -119,13 +115,11 @@ public class GsmListenerService {
                 try (InputStream in = port.getInputStream();
                      OutputStream out = port.getOutputStream()) {
 
-                    // Cấu hình SMS text mode + URC (Unsolicited Result Code)
                     out.write("AT+CMGF=1\r".getBytes(StandardCharsets.US_ASCII)); // text mode
                     out.flush();
                     Thread.sleep(500);
 
                     out.write("AT+CNMI=2,1,0,0,0\r".getBytes(StandardCharsets.US_ASCII));
-                    // URC: báo +CMTI khi có SMS mới
                     out.flush();
                     Thread.sleep(500);
 
@@ -141,12 +135,10 @@ public class GsmListenerService {
 
                             log.debug("📥 Raw modem resp ({}):\n{}", sim.getComName(), resp);
 
-                            // Nếu modem báo có SMS mới: +CMTI: "SM",index
                             if (resp.contains("+CMTI")) {
                                 int index = extractSmsIndex(resp);
                                 if (index > 0) {
                                     log.info("📥 New SMS notification on {} at index {}", sim.getComName(), index);
-                                    // Đọc SMS theo index
                                     String cmd = "AT+CMGR=" + index + "\r";
                                     out.write(cmd.getBytes(StandardCharsets.US_ASCII));
                                     out.flush();
@@ -159,14 +151,12 @@ public class GsmListenerService {
                                     }
                                 }
                             } else {
-                                // Fallback: có thể là kết quả của CMGL hoặc CMGR
                                 processSmsResponse(sim, resp);
                             }
                         }
 
                         Thread.sleep(2000);
 
-                        // Nếu không còn session nào active => stop listener
                         if (activeSessions.getOrDefault(sim.getId(), List.of())
                                 .stream().noneMatch(RentSession::isActive)) {
                             log.info("🛑 No active sessions, stopping listener for sim {}", sim.getId());
@@ -181,10 +171,16 @@ public class GsmListenerService {
             }
         }).start();
     }
+
     private void processSmsResponse(Sim sim, String resp) {
         try {
             SmsMessageUser sms = SmsParser.parse(resp);
             if (sms != null) {
+                if (sms.getContent().contains("[TEST]")) {
+                    log.debug("⏭️ Skip test OTP: {}", sms.getContent());
+                    return;
+                }
+
                 log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
 
                 boolean exists = smsMessageRepository
@@ -219,15 +215,14 @@ public class GsmListenerService {
         }
     }
 
-    /** Lấy index tin nhắn từ raw response */
+    /** Lấy index tin nhắn từ +CMTI hoặc +CMGL */
     private int extractSmsIndex(String resp) {
         try {
-            // Ví dụ: +CMGL: 1,"REC UNREAD","+819012345678",,"25/09/27,15:59:10+36"
-            Pattern p = Pattern.compile("\\+CMGL: (\\d+),");
-            Matcher m = p.matcher(resp);
-            if (m.find()) {
-                return Integer.parseInt(m.group(1));
-            }
+            Matcher m1 = Pattern.compile("\\+CMTI:\\s*\"\\w+\",(\\d+)").matcher(resp);
+            if (m1.find()) return Integer.parseInt(m1.group(1));
+
+            Matcher m2 = Pattern.compile("\\+CMGL:\\s*(\\d+),").matcher(resp);
+            if (m2.find()) return Integer.parseInt(m2.group(1));
         } catch (Exception ignored) {}
         return -1;
     }
@@ -235,38 +230,70 @@ public class GsmListenerService {
     // === Route OTP tới remote broker ===
     private void routeMessage(Sim sim, SmsMessageUser sms) {
         List<RentSession> sessions = activeSessions.getOrDefault(sim.getId(), List.of());
+        if (sessions.isEmpty()) return;
+
+        String contentNorm = normalize(sms.getContent());
+        boolean forwarded = false;
+
         for (RentSession s : sessions) {
-            if (s.isActive()) {
-                for (String service : s.getServices()) {
-                    if (sms.getContent().toLowerCase().contains(service.toLowerCase())
-                            && containsOtp(sms.getContent())) {
+            if (!s.isActive()) continue;
 
-                        String otp = extractOtp(sms.getContent());
-                        Map<String, Object> wsMessage = new HashMap<>();
-                        wsMessage.put("deviceName", sim.getDeviceName());
-                        wsMessage.put("phoneNumber", sim.getPhoneNumber());
-                        wsMessage.put("comNumber", sim.getComName());
-                        wsMessage.put("customerId", s.getAccountId());
-                        wsMessage.put("serviceCode", service);
-                        wsMessage.put("waitingTime", s.getDurationMinutes());
-                        wsMessage.put("countryName", s.getCountry().getCountryCode());
-                        wsMessage.put("smsContent", sms.getContent());
-                        wsMessage.put("fromNumber", sms.getFrom());
-                        wsMessage.put("otp", otp);
-
-                        StompSession session = remoteStompClientConfig.getSession();
-                        if (session != null && session.isConnected()) {
-                            session.send("/topic/receive-otp", wsMessage);
-                            log.info("📤 Forwarded OTP [{}] for customer {} service={} -> remote",
-                                    otp, s.getAccountId(), service);
-                        } else {
-                            log.warn("⚠️ Remote session not connected, cannot forward OTP");
-                        }
-                    }
+            for (String service : s.getServices()) {
+                String serviceNorm = normalize(service);
+                if (contentNorm.contains(serviceNorm) && containsOtp(sms.getContent())) {
+                    forwarded |= forwardToSocket(sim, s, service, sms);
+                } else {
+                    log.debug("❌ Not matched service='{}' content='{}'", service, sms.getContent());
                 }
             }
         }
+
+        if (!forwarded && containsOtp(sms.getContent())) {
+            RentSession firstActive = sessions.stream().filter(RentSession::isActive).findFirst().orElse(null);
+            if (firstActive != null) {
+                String service = firstActive.getServices().isEmpty() ? "UNKNOWN" : firstActive.getServices().get(0);
+                log.info("↪️ Fallback forward with service='{}' (no exact match).", service);
+                forwardToSocket(sim, firstActive, service, sms);
+            } else {
+                log.warn("⚠️ Has OTP but no active session to forward.");
+            }
+        }
+
         sessions.removeIf(s -> !s.isActive());
+    }
+
+    private boolean forwardToSocket(Sim sim, RentSession s, String service, SmsMessageUser sms) {
+        String otp = extractOtp(sms.getContent());
+        if (otp == null) return false;
+
+        Map<String, Object> wsMessage = new HashMap<>();
+        wsMessage.put("deviceName", sim.getDeviceName());
+        wsMessage.put("phoneNumber", sim.getPhoneNumber());
+        wsMessage.put("comNumber", sim.getComName());
+        wsMessage.put("customerId", s.getAccountId());
+        wsMessage.put("serviceCode", service);
+        wsMessage.put("waitingTime", s.getDurationMinutes());
+        wsMessage.put("countryName", s.getCountry().getCountryCode());
+        wsMessage.put("smsContent", sms.getContent());
+        wsMessage.put("fromNumber", sms.getFrom());
+        wsMessage.put("otp", otp);
+
+        StompSession session = remoteStompClientConfig.getSession();
+        if (session != null && session.isConnected()) {
+            session.send("/topic/receive-otp", wsMessage);
+            log.info("📤 Forwarded OTP [{}] for customer {} service={} -> remote",
+                    otp, s.getAccountId(), service);
+            return true;
+        } else {
+            log.warn("⚠️ Remote session not connected, cannot forward OTP (service={}, otp={})",
+                    service, otp);
+            return false;
+        }
+    }
+
+    private String normalize(String s) {
+        if (s == null) return "";
+        return s.toLowerCase(Locale.ROOT).replaceAll("[_\\s]+", "");
     }
 
     private boolean containsOtp(String content) {
