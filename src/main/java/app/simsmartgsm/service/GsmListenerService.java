@@ -143,10 +143,14 @@ public class GsmListenerService {
         }).start();
     }
 
-
     private void processSmsResponse(Sim sim, String resp) {
         try {
             SmsMessageUser sms = SmsParser.parse(resp);
+
+            if (sms == null) {
+                log.debug("⚠️ No valid SMS parsed from resp on {}: {}", sim.getComName(), resp.replace("\r","").replace("\n"," "));
+                return;
+            }
 
             log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
 
