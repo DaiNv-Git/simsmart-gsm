@@ -5,6 +5,8 @@ import app.simsmartgsm.config.SmsParser;
 import app.simsmartgsm.dto.response.SmsMessageUser;
 import app.simsmartgsm.entity.Country;
 import app.simsmartgsm.entity.Sim;
+import app.simsmartgsm.entity.SmsMessage;
+import app.simsmartgsm.repository.SmsMessageRepository;
 import com.fazecast.jSerialComm.SerialPort;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -31,7 +33,8 @@ public class GsmListenerService {
 
     private final SmsSenderService smsSenderService;
     private final RemoteStompClientConfig remoteStompClientConfig;
-
+    
+    private final SmsMessageRepository smsMessageRepository;
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
     private final Set<String> runningListeners = ConcurrentHashMap.newKeySet();
     private final Set<String> sentOtpSimIds = ConcurrentHashMap.newKeySet();
@@ -95,8 +98,8 @@ public class GsmListenerService {
     }
 
     // === Start listener on COM ===
+
     private void startListener(Sim sim) {
-        // add() sẽ return false nếu simId đã tồn tại => thread-safe hơn contains+add
         if (!runningListeners.add(sim.getId())) {
             log.info("Listener already running for sim {}", sim.getId());
             return;
@@ -120,8 +123,8 @@ public class GsmListenerService {
                     Thread.sleep(500);
 
                     while (true) {
-                        // 🔄 Chỉ đọc tin chưa đọc
-                        out.write("AT+CMGL=\"REC UNREAD\"\r".getBytes(StandardCharsets.US_ASCII));
+                        // Đọc tất cả SMS (không xoá)
+                        out.write("AT+CMGL=\"ALL\"\r".getBytes(StandardCharsets.US_ASCII));
                         out.flush();
 
                         byte[] buf = new byte[8192];
@@ -134,17 +137,36 @@ public class GsmListenerService {
                             if (sms != null) {
                                 log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
 
-                                // Route OTP
-                                routeMessage(sim, sms);
+                                // Check DB xem SMS đã tồn tại chưa
+                                boolean exists = smsMessageRepository
+                                        .findByFromPhoneAndToPhoneAndMessage(
+                                                sms.getFrom(),
+                                                sim.getPhoneNumber(),
+                                                sms.getContent()
+                                        ).isPresent();
 
-                                // Sau khi xử lý -> Xoá SMS khỏi bộ nhớ
-                                // Tìm chỉ số (index) tin nhắn từ resp
-                                int idx = extractSmsIndex(resp);
-                                if (idx > 0) {
-                                    String delCmd = "AT+CMGD=" + idx + "\r";
-                                    out.write(delCmd.getBytes(StandardCharsets.US_ASCII));
-                                    out.flush();
-                                    log.info("🗑️ Deleted SMS index {} from {}", idx, sim.getComName());
+                                if (!exists) {
+                                    // Lưu SMS mới vào DB
+                                    SmsMessage smsEntity = SmsMessage.builder()
+                                            .deviceName(sim.getDeviceName())
+                                            .fromPort(sim.getComName())
+                                            .fromPhone(sms.getFrom())
+                                            .toPhone(sim.getPhoneNumber())
+                                            .message(sms.getContent())
+                                            .modemResponse(resp)
+                                            .type("INBOUND")
+                                            .timestamp(Instant.now())
+                                            .build();
+
+                                    smsMessageRepository.save(smsEntity);
+
+                                    log.info("💾 Saved new SMS into DB: from={} to={} content={}",
+                                            sms.getFrom(), sim.getPhoneNumber(), sms.getContent());
+
+                                    // Forward OTP
+                                    routeMessage(sim, sms);
+                                } else {
+                                    log.debug("⚠️ Duplicate SMS ignored: {}", sms.getContent());
                                 }
                             }
                         }
