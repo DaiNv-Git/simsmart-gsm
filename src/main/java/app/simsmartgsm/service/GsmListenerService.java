@@ -110,7 +110,8 @@ public class GsmListenerService {
                 while (true) {
                     portManager.withPort(sim.getComName(), helper -> {
                         try {
-                            String resp = helper.sendAndRead("AT+CMGL=\"ALL\"", 5000);
+                            String resp = helper.sendAndRead("AT+CMGL=\"REC UNREAD\"", 5000);
+
                             if (resp != null && !resp.isBlank()) {
                                 log.info("📥 Raw SMS: {}", resp);
                                 processSmsResponse(sim, resp);
