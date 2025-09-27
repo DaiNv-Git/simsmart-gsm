@@ -178,7 +178,7 @@ public class GsmListenerService {
                     otp, s.getAccountId(), service);
             return true;
         } else {
-            log.warn("⚠️ Remote session not connected, cannot forward OTP (service={}, otp={})",
+             log.warn("⚠️ Remote session not connected, cannot forward OTP (service={}, otp={})",
                     service, otp);
             return false;
         }
