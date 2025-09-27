@@ -33,6 +33,7 @@ public class GsmListenerService {
 
     private final SmsSenderService smsSenderService;
     private final RemoteStompClientConfig remoteStompClientConfig;
+    private final PortManager portManager;
 
     private final SmsMessageRepository smsMessageRepository;
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
@@ -105,64 +106,37 @@ public class GsmListenerService {
 
         new Thread(() -> {
             try {
-                SerialPort port = SerialPort.getCommPort(sim.getComName());
-                port.setBaudRate(115200);
-                if (!port.openPort()) {
-                    log.error("❌ Cannot open port {}", sim.getComName());
-                    runningListeners.remove(sim.getId());
-                    return;
-                }
-                try (InputStream in = port.getInputStream();
-                     OutputStream out = port.getOutputStream()) {
+                log.info("📡 Listener starting on {}...", sim.getComName());
 
-                    out.write("AT+CMGF=1\r".getBytes(StandardCharsets.US_ASCII)); // text mode
-                    out.flush();
-                    Thread.sleep(500);
+                while (true) {
+                    // Dùng PortManager để đảm bảo an toàn khi mở cổng
+                    portManager.withPort(sim.getComName(), helper -> {
+                        try {
+                            // cấu hình modem 1 lần khi mở port
+                            helper.sendAndRead("AT+CMGF=1", 2000);
+                            helper.sendAndRead("AT+CNMI=2,1,0,0,0", 2000);
 
-                    out.write("AT+CNMI=2,1,0,0,0\r".getBytes(StandardCharsets.US_ASCII));
-                    out.flush();
-                    Thread.sleep(500);
+                            // Đọc inbox (có thể thay bằng AT+CMGL="REC UNREAD")
+                            String resp = helper.sendAndRead("AT+CMGL=\"ALL\"", 5000);
 
-                    log.info("📡 Listener started on {} (waiting for SMS...)", sim.getComName());
-
-                    byte[] buf = new byte[8192];
-
-                    while (true) {
-                        int len = in.read(buf);
-                        if (len > 0) {
-                            String resp = new String(buf, 0, len, StandardCharsets.US_ASCII).trim();
-                            if (resp.isEmpty()) continue;
-
-                            log.debug("📥 Raw modem resp ({}):\n{}", sim.getComName(), resp);
-
-                            if (resp.contains("+CMTI")) {
-                                int index = extractSmsIndex(resp);
-                                if (index > 0) {
-                                    log.info("📥 New SMS notification on {} at index {}", sim.getComName(), index);
-                                    String cmd = "AT+CMGR=" + index + "\r";
-                                    out.write(cmd.getBytes(StandardCharsets.US_ASCII));
-                                    out.flush();
-
-                                    Thread.sleep(500);
-                                    int len2 = in.read(buf);
-                                    if (len2 > 0) {
-                                        String smsResp = new String(buf, 0, len2, StandardCharsets.US_ASCII);
-                                        processSmsResponse(sim, smsResp);
-                                    }
-                                }
-                            } else {
+                            if (resp != null && !resp.isBlank()) {
+                                log.debug("📥 Raw SMS buffer ({}):\n{}", sim.getComName(), resp);
                                 processSmsResponse(sim, resp);
                             }
+                        } catch (Exception e) {
+                            log.error("❌ Error reading SMS on {}: {}", sim.getComName(), e.getMessage());
                         }
+                        return null;
+                    }, 5000L);
 
-                        Thread.sleep(2000);
+                    Thread.sleep(3000);
 
-                        if (activeSessions.getOrDefault(sim.getId(), List.of())
-                                .stream().noneMatch(RentSession::isActive)) {
-                            log.info("🛑 No active sessions, stopping listener for sim {}", sim.getId());
-                            runningListeners.remove(sim.getId());
-                            return;
-                        }
+                    // Nếu không còn session nào active => stop listener
+                    if (activeSessions.getOrDefault(sim.getId(), List.of())
+                            .stream().noneMatch(RentSession::isActive)) {
+                        log.info("🛑 No active sessions, stopping listener for sim {}", sim.getId());
+                        runningListeners.remove(sim.getId());
+                        return;
                     }
                 }
             } catch (Exception e) {
@@ -171,6 +145,7 @@ public class GsmListenerService {
             }
         }).start();
     }
+
 
     private void processSmsResponse(Sim sim, String resp) {
         try {
