@@ -75,7 +75,7 @@ public class GsmListenerService {
     }
 
     private String pickSenderPort(String receiverPort) {
-        String configured = "COM76";
+        String configured = "COM128";
         if (configured != null && !configured.equalsIgnoreCase(receiverPort)) {
             return configured;
         }
