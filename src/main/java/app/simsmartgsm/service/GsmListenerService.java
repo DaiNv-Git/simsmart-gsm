@@ -31,26 +31,31 @@ public class GsmListenerService {
 
     // Map quản lý session thuê: simId -> list session
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
+    private final Set<String> runningListeners = ConcurrentHashMap.newKeySet();
 
     // Start listener cho 1 COM
-    public void startListener(Sim sim) {
+    private void startListener(Sim sim) {
+        if (!runningListeners.add(sim.getId())) {
+            log.info("Listener already running for sim {}", sim.getId());
+            return;
+        }
+
         new Thread(() -> {
             try {
                 SerialPort port = SerialPort.getCommPort(sim.getComName());
                 port.setBaudRate(115200);
                 if (!port.openPort()) {
                     log.error("Cannot open port {}", sim.getComName());
+                    runningListeners.remove(sim.getId());
                     return;
                 }
                 try (InputStream in = port.getInputStream();
                      OutputStream out = port.getOutputStream()) {
 
-                    // Bật chế độ text SMS
                     out.write("AT+CMGF=1\r".getBytes(StandardCharsets.US_ASCII));
                     out.flush();
                     Thread.sleep(500);
 
-                    // Vòng lặp đọc tin nhắn
                     while (true) {
                         out.write("AT+CMGL=\"REC UNREAD\"\r".getBytes(StandardCharsets.US_ASCII));
                         out.flush();
@@ -62,17 +67,25 @@ public class GsmListenerService {
                             log.info("Raw SMS resp: {}", resp);
 
                             SmsMessageUser sms = SmsParser.parse(resp);
-
                             if (sms != null) {
                                 routeMessage(sim, sms);
                             }
                         }
 
                         Thread.sleep(2000);
+
+                        // Nếu không còn session nào active → thoát thread
+                        if (activeSessions.getOrDefault(sim.getId(), List.of())
+                                .stream().noneMatch(RentSession::isActive)) {
+                            log.info("No active sessions, stopping listener for sim {}", sim.getId());
+                            runningListeners.remove(sim.getId());
+                            return;
+                        }
                     }
                 }
             } catch (Exception e) {
                 log.error("Listener error on {}: {}", sim.getComName(), e.getMessage(), e);
+                runningListeners.remove(sim.getId());
             }
         }).start();
     }

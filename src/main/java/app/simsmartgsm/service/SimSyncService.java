@@ -27,7 +27,7 @@ public class SimSyncService {
     private static final long SCAN_TIMEOUT_MIN = 1;         
     private static final int MISS_THRESHOLD = 3;
     
-    @Scheduled(fixedRate = 10_000)
+    @Scheduled(fixedRate = 100_000)
     public void scheduledFullScan() {
         try {
             syncAndResolve();
