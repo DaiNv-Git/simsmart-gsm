@@ -63,11 +63,6 @@
 			<optional>true</optional>
 		</dependency>
 		<dependency>
-			<groupId>org.projectlombok</groupId>
-			<artifactId>lombok</artifactId>
-			<optional>true</optional>
-		</dependency>
-		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>
 			<scope>test</scope>
@@ -97,6 +92,13 @@
 			<artifactId>jSerialComm</artifactId>
 			<version>2.9.3</version>
 		</dependency>
+		<dependency>
+			<groupId>org.projectlombok</groupId>
+			<artifactId>lombok</artifactId>
+			<version>1.18.34</version>  <!-- hoặc version mới nhất -->
+			<scope>provided</scope>     <!-- dùng provided cho hợp lý -->
+		</dependency>
+
 	</dependencies>
 
 	<build>
@@ -109,6 +111,7 @@
 						<path>
 							<groupId>org.projectlombok</groupId>
 							<artifactId>lombok</artifactId>
+							<version>1.18.34</version>
 						</path>
 					</annotationProcessorPaths>
 				</configuration>

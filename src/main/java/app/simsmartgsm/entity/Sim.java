@@ -16,8 +16,7 @@ import java.util.UUID;
 @Builder
 @Document(collection = "sims")
 public class Sim {
-
-    /** MongoDB document ID */
+    
     @Id
     @Builder.Default
     private String id = UUID.randomUUID().toString();

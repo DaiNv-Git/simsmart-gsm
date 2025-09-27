@@ -121,7 +121,7 @@ public class SmsSenderService {
                 if (port != null) port.closePort();
             }
 
-            if ("OK".equals(status)) break; // thành công thì thoát
+            if ("OK".equals(status)) break; 
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException ignored) {}
