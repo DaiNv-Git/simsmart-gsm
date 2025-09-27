@@ -197,11 +197,23 @@ public class GsmListenerService {
     }
 
     // === Route OTP tới remote broker ===
+    // === Route OTP tới remote broker ===
+    private final Set<String> forwardedCache = ConcurrentHashMap.newKeySet();
+
     private void routeMessage(Sim sim, SmsMessageUser sms) {
         List<RentSession> sessions = activeSessions.getOrDefault(sim.getId(), List.of());
         if (sessions.isEmpty()) return;
 
         String contentNorm = normalize(sms.getContent());
+        String otp = extractOtp(sms.getContent());
+        if (otp == null) return;
+
+        String cacheKey = sim.getId() + "|" + sms.getContent() + "|" + otp;
+        if (!forwardedCache.add(cacheKey)) {
+            log.debug("⚠️ Duplicate forward ignored: {}", cacheKey);
+            return; // bỏ qua duplicate
+        }
+
         boolean forwarded = false;
 
         for (RentSession s : sessions) {
@@ -209,14 +221,18 @@ public class GsmListenerService {
 
             for (String service : s.getServices()) {
                 String serviceNorm = normalize(service);
-                if (contentNorm.contains(serviceNorm) && containsOtp(sms.getContent())) {
+
+                // ✅ map bằng prefix (3 chữ cái)
+                String servicePrefix = serviceNorm.length() >= 3 ? serviceNorm.substring(0, 3) : serviceNorm;
+                String contentPrefix = contentNorm.length() >= 3 ? contentNorm.substring(0, 3) : contentNorm;
+
+                if (contentNorm.contains(serviceNorm) || contentPrefix.equals(servicePrefix)) {
                     forwarded = forwardToSocket(sim, s, service, sms) || forwarded;
                 }
             }
         }
 
-        // ❌ bỏ fallback reuse service sai
-        if (!forwarded && containsOtp(sms.getContent())) {
+        if (!forwarded) {
             log.warn("⚠️ OTP found but no matching service for SMS='{}'", sms.getContent());
 
             RentSession firstActive = sessions.stream()
@@ -225,7 +241,7 @@ public class GsmListenerService {
                     .orElse(null);
 
             if (firstActive != null) {
-                forwardToSocket(sim, firstActive, "UNKNOWN", sms); // mark rõ UNKNOWN
+                forwardToSocket(sim, firstActive, "UNKNOWN", sms);
             }
         }
 
