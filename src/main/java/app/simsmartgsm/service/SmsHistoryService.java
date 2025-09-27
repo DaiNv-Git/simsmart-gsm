@@ -145,7 +145,7 @@ public class SmsHistoryService {
         return all;
     }
 
-    @Scheduled(fixedRate = 30000)
+
     public void pushNewInboxMessages() {
         List<Map<String, String>> all = scanAllPorts();
         for (Map<String, String> msg : all) {
