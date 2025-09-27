@@ -23,6 +23,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -61,7 +62,7 @@ public class GsmListenerService {
                 new Thread(() -> {
                     try {
                         Thread.sleep(2000);
-                        String otp = generateOtp(6);
+                        String otp = generateOtp();
                         String msg = "[TEST] " + service.toUpperCase() + " OTP " + otp;
 
                         log.info("📤 [INIT TEST] Sending SMS from {} -> {}: [{}]",
@@ -78,7 +79,7 @@ public class GsmListenerService {
     }
 
     private String pickSenderPort(String receiverPort) {
-        String configured = "COM76"; // cấu hình sẵn 1 port gửi test
+        String configured = "COM76"; 
         if (configured != null && !configured.equalsIgnoreCase(receiverPort)) {
             return configured;
         }
@@ -91,11 +92,11 @@ public class GsmListenerService {
         return receiverPort;
     }
 
-    private String generateOtp(int len) {
-        int min = (int) Math.pow(10, len - 1);
-        int max = (int) Math.pow(10, len) - 1;
-        return String.valueOf(new Random().nextInt(max - min + 1) + min);
+    private String generateOtp() {
+        int otp = ThreadLocalRandom.current().nextInt(10000000, 100000000);
+        return String.format("%08d", otp); // đảm bảo luôn 8 chữ số
     }
+
 
     // === Start listener on COM ===
     private void startListener(Sim sim) {
