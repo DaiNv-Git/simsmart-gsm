@@ -49,36 +49,38 @@ public class GsmListenerService {
             startListener(sim);
         }
 
-        // ✅ chỉ gửi 1 OTP test duy nhất để khởi động
         final String receiverPort = sim.getComName();
         final String senderPort = pickSenderPort(receiverPort);
 
-        
 
-        if (!services.isEmpty() && sentOtpSimIds.add(sim.getId())) {
+
+        if (!services.isEmpty()) {
             String service = services.get(0);
-            new Thread(() -> {
-                try {
-                    Thread.sleep(2000);
+            String key = sim.getId() + ":" + service.toLowerCase(); // unique per sim+service
+            if (sentOtpSimIds.add(key)) {
+                new Thread(() -> {
+                    try {
+                        Thread.sleep(2000);
 
-                    String otp = generateOtp(6);
-                    String msg = service.toUpperCase() + " OTP " + otp;
+                        String otp = generateOtp(6);
+                        String msg = service.toUpperCase() + " OTP " + otp;
 
-                    log.info("📤 [INIT TEST] Sending SMS from {} -> {}: [{}]",
-                            senderPort, sim.getPhoneNumber(), msg);
+                        log.info("📤 [INIT TEST] Sending SMS from {} -> {}: [{}]",
+                                senderPort, sim.getPhoneNumber(), msg);
 
-                    boolean ok = smsSenderService.sendSms(senderPort, sim.getPhoneNumber(), msg);
-                    log.info("📤 [INIT TEST] Result: {}", ok);
-                } catch (Exception e) {
-                    log.error("❌ Error auto-sending SMS: {}", e.getMessage(), e);
-                }
-            }).start();
+                        boolean ok = smsSenderService.sendSms(senderPort, sim.getPhoneNumber(), msg);
+                        log.info("📤 [INIT TEST] Result: {}", ok);
+                    } catch (Exception e) {
+                        log.error("❌ Error auto-sending SMS: {}", e.getMessage(), e);
+                    }
+                }).start();
+            }
         }
     }
 
 
     private String pickSenderPort(String receiverPort) {
-        String configured = "COM110"; // cấu hình sẵn 1 port gửi test
+        String configured = "COM71"; // cấu hình sẵn 1 port gửi test
         if (configured != null && !configured.equalsIgnoreCase(receiverPort)) {
             return configured;
         }

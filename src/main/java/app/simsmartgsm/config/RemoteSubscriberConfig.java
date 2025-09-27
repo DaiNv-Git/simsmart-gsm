@@ -106,8 +106,8 @@ public class RemoteSubscriberConfig {
                     log.info("✅ Parsed RentSimRequest: {}", req);
 
                     // TODO: xử lý luồng tiếp theo, ví dụ gọi gsmListenerService.rentSim(...)
-                    Sim sim = simRepository.findByPhoneNumber(req.getSim())
-                            .orElseThrow(() -> new RuntimeException("SIM not found: " + req.getSim()));
+                    Sim sim = simRepository.findByPhoneNumber(req.getPhoneNumber())
+                            .orElseThrow(() -> new RuntimeException("SIM not found: " + req.getPhoneNumber()));
 
                     Country country = countryRepository.findByCountryCode(req.getCountryCode())
                             .orElseThrow(() -> new RuntimeException("Country not found: " + req.getCountryCode()));
