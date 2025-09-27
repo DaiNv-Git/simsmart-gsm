@@ -5,8 +5,6 @@ import app.simsmartgsm.config.SmsParser;
 import app.simsmartgsm.dto.response.SmsMessageUser;
 import app.simsmartgsm.entity.Country;
 import app.simsmartgsm.entity.Sim;
-import app.simsmartgsm.entity.SmsMessage;
-import app.simsmartgsm.repository.SmsMessageRepository;
 import app.simsmartgsm.uitils.AtCommandHelper;
 import com.fazecast.jSerialComm.SerialPort;
 import lombok.AllArgsConstructor;
@@ -15,12 +13,12 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.stomp.StompSession;
 import org.springframework.stereotype.Service;
+
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -29,14 +27,12 @@ import java.util.regex.Pattern;
 @Slf4j
 public class GsmListenerService {
 
-    private final SmsSenderService smsSenderService;
     private final RemoteStompClientConfig remoteStompClientConfig;
     private final PortManager portManager;
 
-    private final SmsMessageRepository smsMessageRepository;
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
     private final Set<String> runningListeners = ConcurrentHashMap.newKeySet();
-    private final Set<String> sentOtpSimIds = ConcurrentHashMap.newKeySet();
+    private final Set<String> forwardedCache = ConcurrentHashMap.newKeySet();
 
     // === Rent SIM session ===
     public void rentSim(Sim sim, Long accountId, List<String> services,
@@ -48,54 +44,8 @@ public class GsmListenerService {
         if (!runningListeners.contains(sim.getId())) {
             startListener(sim);
         }
-
-        final String receiverPort = sim.getComName();
-        final String senderPort = pickSenderPort(receiverPort);
-
-        if (!services.isEmpty()) {
-            String service = services.get(0);
-            String key = sim.getId() + ":" + service.toLowerCase();
-            if (sentOtpSimIds.add(key)) {
-                new Thread(() -> {
-                    try {
-                        Thread.sleep(2000);
-                        String otp = generateOtp();
-                        String msg = "[TEST] " + service.toUpperCase() + " OTP " + otp;
-
-                        log.info("📤 [INIT TEST] Sending SMS from {} -> {}: [{}]",
-                                senderPort, sim.getPhoneNumber(), msg);
-
-                        boolean ok = smsSenderService.sendSms(senderPort, sim.getPhoneNumber(), msg);
-                        log.info("📤 [INIT TEST] Result: {}", ok);
-                    } catch (Exception e) {
-                        log.error("❌ Error auto-sending SMS: {}", e.getMessage(), e);
-                    }
-                }).start();
-            }
-        }
     }
 
-    private String pickSenderPort(String receiverPort) {
-        String configured = "COM124";
-        if (configured != null && !configured.equalsIgnoreCase(receiverPort)) {
-            return configured;
-        }
-        SerialPort[] ports = SerialPort.getCommPorts();
-        for (SerialPort p : ports) {
-            if (!p.getSystemPortName().equalsIgnoreCase(receiverPort)) {
-                return p.getSystemPortName();
-            }
-        }
-        return receiverPort;
-    }
-
-    private String generateOtp() {
-        int otp = ThreadLocalRandom.current().nextInt(10000000, 100000000);
-        return String.format("%08d", otp); // đảm bảo luôn 8 chữ số
-    }
-
-
-    // === Start listener on COM ===
     // === Start listener on COM ===
     private void startListener(Sim sim) {
         if (!runningListeners.add(sim.getId())) {
@@ -110,11 +60,30 @@ public class GsmListenerService {
                 while (true) {
                     portManager.withPort(sim.getComName(), helper -> {
                         try {
+                            // Lấy tin nhắn chưa đọc
                             String resp = helper.sendAndRead("AT+CMGL=\"REC UNREAD\"", 5000);
 
-                            if (resp != null && !resp.isBlank()) {
-                                log.info("📥 Raw SMS: {}", resp);
-                                processSmsResponse(sim, resp);
+                            if (resp != null && resp.contains("+CMGL:")) {
+                                String[] blocks = resp.split("\\+CMGL:");
+                                for (String block : blocks) {
+                                    if (block.isBlank()) continue;
+                                    String smsResp = "+CMGL:" + block.trim();
+
+                                    SmsMessageUser sms = SmsParser.parse(smsResp);
+                                    if (sms != null) {
+                                        log.info("✅ Parsed SMS from={} content={}", sms.getFrom(), sms.getContent());
+
+                                        // Forward
+                                        routeMessage(sim, sms);
+
+                                        // Xoá sau khi xử lý
+                                        int idx = extractSmsIndex(smsResp);
+                                        if (idx > 0) {
+                                            helper.sendAndRead("AT+CMGD=" + idx, 2000);
+                                            log.debug("🗑️ Deleted SMS index {}", idx);
+                                        }
+                                    }
+                                }
                             }
                         } catch (Exception e) {
                             log.error("❌ Error on {}: {}", sim.getComName(), e.getMessage());
@@ -122,10 +91,9 @@ public class GsmListenerService {
                         return null;
                     }, 5000L);
 
-
                     Thread.sleep(2000);
 
-                    // nếu hết session thì dừng listener
+                    // Nếu không còn session nào active => stop listener
                     if (activeSessions.getOrDefault(sim.getId(), List.of())
                             .stream().noneMatch(RentSession::isActive)) {
                         log.info("🛑 No active sessions, stopping listener for sim {}", sim.getId());
@@ -140,81 +108,21 @@ public class GsmListenerService {
         }, "listener-" + sim.getComName()).start();
     }
 
-
-    private void processSmsResponse(Sim sim, String resp) {
-        try {
-            SmsMessageUser sms = SmsParser.parse(resp);
-
-            if (sms == null) {
-                log.debug("⚠️ No valid SMS parsed on {}: {}", sim.getComName(), resp.replace("\r"," ").replace("\n"," "));
-                return;
-            }
-
-            log.info("✅ Parsed SMS from={} content={}", sms.getFrom(), sms.getContent());
-
-            boolean exists = smsMessageRepository
-                    .findByFromPhoneAndToPhoneAndMessageAndType(
-                            sms.getFrom(),
-                            sim.getPhoneNumber(),
-                            sms.getContent(),
-                            "INBOUND"
-                    ).isPresent();
-
-            if (!exists) {
-                SmsMessage smsEntity = SmsMessage.builder()
-                        .deviceName(sim.getDeviceName())
-                        .fromPort(sim.getComName())
-                        .fromPhone(sms.getFrom())
-                        .toPhone(sim.getPhoneNumber())
-                        .message(sms.getContent())
-                        .modemResponse(resp)
-                        .type("INBOUND")
-                        .timestamp(Instant.now())
-                        .build();
-
-                smsMessageRepository.save(smsEntity);
-                log.info("💾 Saved new SMS to DB and forwarding...");
-
-                routeMessage(sim, sms);
-            } else {
-                log.debug("⚠️ Duplicate SMS ignored: {}", sms.getContent());
-            }
-        } catch (Exception e) {
-            log.error("❌ Error processing SMS: {}", e.getMessage(), e);
-        }
-    }
-
-
-    /** Lấy index tin nhắn từ +CMTI hoặc +CMGL */
-    private int extractSmsIndex(String resp) {
-        try {
-            Matcher m1 = Pattern.compile("\\+CMTI:\\s*\"\\w+\",(\\d+)").matcher(resp);
-            if (m1.find()) return Integer.parseInt(m1.group(1));
-
-            Matcher m2 = Pattern.compile("\\+CMGL:\\s*(\\d+),").matcher(resp);
-            if (m2.find()) return Integer.parseInt(m2.group(1));
-        } catch (Exception ignored) {}
-        return -1;
-    }
-
     // === Route OTP tới remote broker ===
-    // === Route OTP tới remote broker ===
-    private final Set<String> forwardedCache = ConcurrentHashMap.newKeySet();
-
     private void routeMessage(Sim sim, SmsMessageUser sms) {
         List<RentSession> sessions = activeSessions.getOrDefault(sim.getId(), List.of());
         if (sessions.isEmpty()) return;
 
-        String contentNorm = normalize(sms.getContent());
         String otp = extractOtp(sms.getContent());
         if (otp == null) return;
 
         String cacheKey = sim.getId() + "|" + sms.getContent() + "|" + otp;
         if (!forwardedCache.add(cacheKey)) {
             log.debug("⚠️ Duplicate forward ignored: {}", cacheKey);
-            return; // bỏ qua duplicate
+            return;
         }
 
+        String contentNorm = normalize(sms.getContent());
         boolean forwarded = false;
 
         for (RentSession s : sessions) {
@@ -222,12 +130,10 @@ public class GsmListenerService {
 
             for (String service : s.getServices()) {
                 String serviceNorm = normalize(service);
-
-                // ✅ map bằng prefix (3 chữ cái)
                 String servicePrefix = serviceNorm.length() >= 3 ? serviceNorm.substring(0, 3) : serviceNorm;
                 String contentPrefix = contentNorm.length() >= 3 ? contentNorm.substring(0, 3) : contentNorm;
 
-                if (contentNorm.contains(serviceNorm) || contentPrefix.equals(servicePrefix)) {
+                if (contentNorm.contains(serviceNorm) || servicePrefix.equals(contentPrefix)) {
                     forwarded = forwardToSocket(sim, s, service, sms) || forwarded;
                 }
             }
@@ -248,7 +154,6 @@ public class GsmListenerService {
 
         sessions.removeIf(s -> !s.isActive());
     }
-
 
     private boolean forwardToSocket(Sim sim, RentSession s, String service, SmsMessageUser sms) {
         String otp = extractOtp(sms.getContent());
@@ -279,13 +184,17 @@ public class GsmListenerService {
         }
     }
 
+    private int extractSmsIndex(String resp) {
+        try {
+            Matcher m2 = Pattern.compile("\\+CMGL:\\s*(\\d+),").matcher(resp);
+            if (m2.find()) return Integer.parseInt(m2.group(1));
+        } catch (Exception ignored) {}
+        return -1;
+    }
+
     private String normalize(String s) {
         if (s == null) return "";
         return s.toLowerCase(Locale.ROOT).replaceAll("[_\\s]+", "");
-    }
-
-    private boolean containsOtp(String content) {
-        return content.matches(".*\\b\\d{4,8}\\b.*");
     }
 
     private String extractOtp(String content) {
@@ -301,6 +210,7 @@ public class GsmListenerService {
         private Instant startTime;
         private int durationMinutes;
         private Country country;
+
         boolean isActive() {
             return Instant.now().isBefore(startTime.plus(Duration.ofMinutes(durationMinutes)));
         }
