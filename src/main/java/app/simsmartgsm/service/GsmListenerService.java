@@ -151,12 +151,7 @@ public class GsmListenerService {
     private void processSmsResponse(Sim sim, String resp) {
         try {
             SmsMessageUser sms = SmsParser.parse(resp);
-            if (sms != null) {
-                if (sms.getContent().contains("[TEST]")) {
-                    log.debug("⏭️ Skip test OTP: {}", sms.getContent());
-                    return;
-                }
-
+            
                 log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
 
                 boolean exists = smsMessageRepository
@@ -184,7 +179,6 @@ public class GsmListenerService {
                     routeMessage(sim, sms);
                 } else {
                     log.debug("⚠️ Duplicate SMS ignored: {}", sms.getContent());
-                }
             }
         } catch (Exception e) {
             log.error("❌ Error processing SMS: {}", e.getMessage(), e);
