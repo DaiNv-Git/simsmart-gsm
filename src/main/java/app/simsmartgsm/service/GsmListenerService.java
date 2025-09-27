@@ -34,7 +34,7 @@ public class GsmListenerService {
 
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
     private final Set<String> runningListeners = ConcurrentHashMap.newKeySet();
-
+    private final Set<String> sentOtpSimIds = ConcurrentHashMap.newKeySet();
     // === Rent SIM session ===
     public void rentSim(Sim sim, Long accountId, List<String> services,
                         int durationMinutes, Country country) {
@@ -50,11 +50,13 @@ public class GsmListenerService {
         final String receiverPort = sim.getComName();
         final String senderPort = pickSenderPort(receiverPort);
 
-        if (!services.isEmpty()) {
-            String service = services.get(0); // chỉ pick service đầu tiên
+        
+
+        if (!services.isEmpty() && sentOtpSimIds.add(sim.getId())) {
+            String service = services.get(0);
             new Thread(() -> {
                 try {
-                    Thread.sleep(2000); // chờ listener khởi động
+                    Thread.sleep(2000);
 
                     String otp = generateOtp(6);
                     String msg = service.toUpperCase() + " OTP " + otp;
