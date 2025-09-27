@@ -35,7 +35,7 @@ public class GsmListenerService {
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
     private final Set<String> runningListeners = ConcurrentHashMap.newKeySet();
 
-    // KH thuê SIM
+    // === Rent SIM session ===
     public void rentSim(Sim sim, Long accountId, List<String> services,
                         int durationMinutes, Country country) {
         RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes, country);
@@ -46,7 +46,7 @@ public class GsmListenerService {
             startListener(sim);
         }
 
-        // gửi SMS test OTP từ port khác (giả lập)
+        // Test gửi OTP từ cổng khác
         final String receiverPort = sim.getComName();
         final String senderPort = pickSenderPort(receiverPort);
         for (String service : services) {
@@ -67,7 +67,7 @@ public class GsmListenerService {
     }
 
     private String pickSenderPort(String receiverPort) {
-        String configured = "COM111"; // cố định 1 port gửi test
+        String configured = "COM111"; // cấu hình sẵn 1 port gửi test
         if (configured != null && !configured.equalsIgnoreCase(receiverPort)) {
             return configured;
         }
@@ -86,7 +86,7 @@ public class GsmListenerService {
         return String.valueOf(new Random().nextInt(max - min + 1) + min);
     }
 
-    // Listener đọc SMS
+    // === Start listener on COM ===
     private void startListener(Sim sim) {
         if (!runningListeners.add(sim.getId())) {
             log.info("Listener already running for sim {}", sim.getId());
@@ -104,25 +104,30 @@ public class GsmListenerService {
                 }
                 try (InputStream in = port.getInputStream();
                      OutputStream out = port.getOutputStream()) {
+
                     out.write("AT+CMGF=1\r".getBytes(StandardCharsets.US_ASCII));
                     out.flush();
                     Thread.sleep(500);
 
                     while (true) {
-                        out.write("AT+CMGL=\"REC UNREAD\"\r".getBytes(StandardCharsets.US_ASCII));
+                        // 🔄 Đọc tất cả SMS thay vì chỉ unread
+                        out.write("AT+CMGL=\"ALL\"\r".getBytes(StandardCharsets.US_ASCII));
                         out.flush();
 
-                        byte[] buf = new byte[2048];
+                        byte[] buf = new byte[4096];
                         int len = in.read(buf);
                         if (len > 0) {
                             String resp = new String(buf, 0, len, StandardCharsets.US_ASCII);
-                            log.info("📥 Raw SMS resp: {}", resp);
+                            log.debug("📥 Raw SMS buffer: \n{}", resp);
 
                             SmsMessageUser sms = SmsParser.parse(resp);
-                            if (sms != null) routeMessage(sim, sms);
+                            if (sms != null) {
+                                log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
+                                routeMessage(sim, sms);
+                            }
                         }
 
-                        Thread.sleep(2000);
+                        Thread.sleep(3000);
 
                         if (activeSessions.getOrDefault(sim.getId(), List.of())
                                 .stream().noneMatch(RentSession::isActive)) {
@@ -139,7 +144,7 @@ public class GsmListenerService {
         }).start();
     }
 
-    // Route OTP tới remote broker
+    // === Route OTP tới remote broker ===
     private void routeMessage(Sim sim, SmsMessageUser sms) {
         List<RentSession> sessions = activeSessions.getOrDefault(sim.getId(), List.of());
         for (RentSession s : sessions) {
