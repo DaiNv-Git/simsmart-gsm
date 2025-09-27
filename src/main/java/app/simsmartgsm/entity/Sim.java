@@ -32,7 +32,7 @@ public class Sim {
 
     /** Mã quốc gia (mặc định JVM) */
     @Builder.Default
-    private String countryCode = "JVM";
+    private String countryCode = "JVN";
 
     /** Thiết bị đang chứa SIM (tên server/vps) */
     private String deviceName;

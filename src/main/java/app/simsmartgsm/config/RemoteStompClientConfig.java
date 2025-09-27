@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicReference;
 @Slf4j
 public class RemoteStompClientConfig {
 
-    private static final String REMOTE_WS_URL = "ws://72.60.41.168/ws-endpoint";
+    private static final String REMOTE_WS_URL = "ws://72.60.41.168:9090/ws";
     private final AtomicReference<StompSession> stompSessionRef = new AtomicReference<>();
 
     @PostConstruct

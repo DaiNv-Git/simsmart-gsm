@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.AtomicReference;
 @RequiredArgsConstructor
 public class RemoteSubscriberConfig {
 
-    private static final String REMOTE_WS_URL = "ws://72.60.41.168/ws-endpoint";
+    private static final String REMOTE_WS_URL = "ws://72.60.41.168:9090/ws";
     private static final String SUB_TOPIC = "/topic/send-otp";  
     private static final ObjectMapper mapper = new ObjectMapper();
 
