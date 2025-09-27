@@ -46,30 +46,31 @@ public class GsmListenerService {
             startListener(sim);
         }
 
+        // ✅ chỉ gửi 1 OTP test duy nhất để khởi động
         final String receiverPort = sim.getComName();
         final String senderPort = pickSenderPort(receiverPort);
 
-        for (String service : services) {
+        if (!services.isEmpty()) {
+            String service = services.get(0); // chỉ pick service đầu tiên
             new Thread(() -> {
                 try {
-                    for (int i = 1; i <= 2; i++) {   // ✅ chỉ gửi 3 lần
-                        Thread.sleep(2000); // đợi trước mỗi lần gửi
+                    Thread.sleep(2000); // chờ listener khởi động
 
-                        String otp = generateOtp(6);
-                        String msg = service.toUpperCase() + " OTP " + otp;
+                    String otp = generateOtp(6);
+                    String msg = service.toUpperCase() + " OTP " + otp;
 
-                        log.info("📤 [TEST {}] Sending SMS from {} -> {}: [{}]",
-                                i, senderPort, sim.getPhoneNumber(), msg);
+                    log.info("📤 [INIT TEST] Sending SMS from {} -> {}: [{}]",
+                            senderPort, sim.getPhoneNumber(), msg);
 
-                        boolean ok = smsSenderService.sendSms(senderPort, sim.getPhoneNumber(), msg);
-                        log.info("📤 [TEST {}] Result: {}", i, ok);
-                    }
+                    boolean ok = smsSenderService.sendSms(senderPort, sim.getPhoneNumber(), msg);
+                    log.info("📤 [INIT TEST] Result: {}", ok);
                 } catch (Exception e) {
                     log.error("❌ Error auto-sending SMS: {}", e.getMessage(), e);
                 }
             }).start();
         }
     }
+
 
     private String pickSenderPort(String receiverPort) {
         String configured = "COM110"; // cấu hình sẵn 1 port gửi test
