@@ -48,34 +48,34 @@ public class GsmListenerService {
             startListener(sim);
         }
 
-        final String receiverPort = sim.getComName();
-        final String senderPort = pickSenderPort(receiverPort);
+//        final String receiverPort = sim.getComName();
+//        final String senderPort = pickSenderPort(receiverPort);
 
-        if (!services.isEmpty()) {
-            String service = services.get(0);
-            String key = sim.getId() + ":" + service.toLowerCase();
-            if (sentOtpSimIds.add(key)) {
-                new Thread(() -> {
-                    try {
-                        Thread.sleep(2000);
-                        String otp = generateOtp();
-                        String msg = "[TEST] " + service.toUpperCase() + " OTP " + otp;
-
-                        log.info("📤 [INIT TEST] Sending SMS from {} -> {}: [{}]",
-                                senderPort, sim.getPhoneNumber(), msg);
-
-                        boolean ok = smsSenderService.sendSms(senderPort, sim.getPhoneNumber(), msg);
-                        log.info("📤 [INIT TEST] Result: {}", ok);
-                    } catch (Exception e) {
-                        log.error("❌ Error auto-sending SMS: {}", e.getMessage(), e);
-                    }
-                }).start();
-            }
-        }
+//        if (!services.isEmpty()) {
+//            String service = services.get(0);
+//            String key = sim.getId() + ":" + service.toLowerCase();
+//            if (sentOtpSimIds.add(key)) {
+//                new Thread(() -> {
+//                    try {
+//                        Thread.sleep(2000);
+//                        String otp = generateOtp();
+//                        String msg = "[TEST] " + service.toUpperCase() + " OTP " + otp;
+//
+//                        log.info("📤 [INIT TEST] Sending SMS from {} -> {}: [{}]",
+//                                senderPort, sim.getPhoneNumber(), msg);
+//
+//                        boolean ok = smsSenderService.sendSms(senderPort, sim.getPhoneNumber(), msg);
+//                        log.info("📤 [INIT TEST] Result: {}", ok);
+//                    } catch (Exception e) {
+//                        log.error("❌ Error auto-sending SMS: {}", e.getMessage(), e);
+//                    }
+//                }).start();
+//            }
+//        }
     }
 
     private String pickSenderPort(String receiverPort) {
-        String configured = "COM76";
+        String configured = "COM100";
         if (configured != null && !configured.equalsIgnoreCase(receiverPort)) {
             return configured;
         }
