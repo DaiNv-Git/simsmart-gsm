@@ -114,7 +114,7 @@ public class GsmListenerService {
                             helper.sendAndRead("AT+CNMI=2,1,0,0,0", 2000);
 
                             // Đọc inbox (có thể thay bằng AT+CMGL="REC UNREAD")
-                            String resp = helper.sendAndRead("AT+CMGL=\"ALL\"", 5000);
+                            String resp = helper.sendAndRead("AT+CMGL=\"REC UNREAD", 5000);
 
                             if (resp != null && !resp.isBlank()) {
                                 log.debug("📥 Raw SMS buffer ({}):\n{}", sim.getComName(), resp);
