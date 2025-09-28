@@ -257,7 +257,10 @@ public class SmsSenderService {
         }
         return "unknown";
     }
-
+    public boolean sendSms(String portName, String toNumber, String message) {
+        SmsMessage result = sendOne(portName, toNumber, message);
+        return "OK".equals(result.getType()) || "SENT".equals(result.getType());
+    }
     // ---------- internal task ----------
     private static class SendTask {
         final String portName;
