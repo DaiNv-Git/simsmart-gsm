@@ -89,43 +89,30 @@ public class GsmListenerService {
     }
 
     // === Xử lý SMS nhận về từ PortWorker ===
-    // === Xử lý SMS nhận về từ PortWorker ===
     protected void processSms(Sim sim, AtCommandHelper.SmsRecord rec) {
-        log.info("🔎 [processSms] COM={} phone={} body={}", sim.getComName(), sim.getPhoneNumber(), rec.body);
-
-        // Lấy session thuê SIM
         List<RentSession> sessions = activeSessions.getOrDefault(sim.getId(), List.of());
-        log.info("🔎 Found {} active sessions for SIM {}", sessions.size(), sim.getId());
-        if (sessions.isEmpty()) {
-            log.warn("⚠️ No active sessions for SIM {} -> skip SMS", sim.getId());
-            return;
-        }
+        if (sessions.isEmpty()) return;
 
-        // Extract OTP
-        String otp = extractOtp(rec.body);
-        log.info("🔎 Extracted OTP={} from body={}", otp, rec.body);
-        if (otp == null) {
-            log.warn("⚠️ No OTP found in message body -> skip");
-            return;
-        }
-
-        // Chuẩn hóa nội dung SMS
         String smsNorm = normalize(rec.body);
-        log.info("🔎 Normalized SMS body = {}", smsNorm);
+        String otp = extractOtp(rec.body);
+        if (otp == null) return;
+
+        // lấy prefix 4 ký tự đầu tiên từ SMS
+        String prefix = smsNorm.length() >= 4 ? smsNorm.substring(0, 4) : smsNorm;
+        log.info("🔎 SMS prefix = {}", prefix);
 
         boolean matched = false;
 
-        // Kiểm tra từng session
         for (RentSession s : sessions) {
-            log.info("🔎 Checking session: acc={} services={} active={}", s.getAccountId(), s.getServices(), s.isActive());
-
             if (!s.isActive()) continue;
 
             for (String service : s.getServices()) {
                 String serviceNorm = normalize(service);
-                log.info("🔎 Compare service={} (norm={}) with smsNorm={}", service, serviceNorm, smsNorm);
+                String servicePrefix = serviceNorm.substring(0, Math.min(4, serviceNorm.length()));
 
-                if (smsNorm.contains(serviceNorm)) {
+                log.info("🔎 Compare prefix={} with servicePrefix={}", prefix, servicePrefix);
+
+                if (prefix.equals(servicePrefix)) {
                     log.info("✅ Matched service={} for acc={}", service, s.getAccountId());
                     forwardToSocket(sim, s, service, rec, otp);
                     matched = true;
@@ -133,19 +120,15 @@ public class GsmListenerService {
             }
         }
 
-        // Nếu không match service nào nhưng vẫn có OTP
         if (!matched) {
             RentSession first = sessions.stream().filter(RentSession::isActive).findFirst().orElse(null);
             if (first != null) {
                 String service = first.getServices().isEmpty() ? "UNKNOWN" : first.getServices().get(0);
-                log.info("↪️ Fallback forward with service={} acc={}", service, first.getAccountId());
+                log.info("↪️ Fallback forward with service={}", service);
                 forwardToSocket(sim, first, service, rec, otp);
-            } else {
-                log.warn("⚠️ No active session left -> cannot forward SMS");
             }
         }
 
-        // Remove session hết hạn
         sessions.removeIf(s -> !s.isActive());
     }
 
