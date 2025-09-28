@@ -31,7 +31,7 @@ public class SimSyncService {
     private static final int INACTIVE_THRESHOLD = 3;  // vài lần đầu inactive
 
     // chạy mỗi 60 giây
-    @Scheduled(fixedRate = 300_000)
+    @Scheduled(fixedRate = 600_000)
     public void scheduledFullScan() {
         try {
             syncAndResolve();
