@@ -15,7 +15,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.stomp.StompSession;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -147,26 +149,16 @@ public class GsmListenerService {
 
     private void processSmsResponse(Sim sim, String resp) {
         try {
-            // Tách các block SMS theo +CMGL
-            String[] blocks = resp.split("\\+CMGL:");
-            if (blocks.length <= 1) {
-                log.debug("⚠️ Không có SMS hợp lệ trong buffer: {}", resp.replace("\r"," ").replace("\n"," "));
-                return;
-            }
+            SmsMessageUser sms = SmsParser.parse(resp);
 
-            // Lấy block cuối cùng (tin mới nhất)
-            String lastBlock = "+CMGL:" + blocks[blocks.length - 1];
-            log.debug("📩 Last SMS block ({}): {}", sim.getComName(), lastBlock.replace("\r"," ").replace("\n"," "));
-
-            SmsMessageUser sms = SmsParser.parse(lastBlock);
             if (sms == null) {
-                log.warn("⚠️ Parse thất bại cho SMS mới nhất trên {}: {}", sim.getComName(), lastBlock);
-                return;
+                log.warn("⚠️ No valid SMS parsed on {}. Raw:\n{}", sim.getComName(),
+                        resp.replace("\r", " ").replace("\n", " "));
+                return; // ⛔ stop tại đây để tránh NullPointer
             }
 
-            log.info("✅ Parsed NEW SMS from={} content={}", sms.getFrom(), sms.getContent());
+            log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
 
-            // Check duplicate
             boolean exists = smsMessageRepository
                     .findByFromPhoneAndToPhoneAndMessageAndType(
                             sms.getFrom(),
@@ -182,40 +174,22 @@ public class GsmListenerService {
                         .fromPhone(sms.getFrom())
                         .toPhone(sim.getPhoneNumber())
                         .message(sms.getContent())
-                        .modemResponse(lastBlock)
+                        .modemResponse(resp)
                         .type("INBOUND")
                         .timestamp(Instant.now())
                         .build();
 
                 smsMessageRepository.save(smsEntity);
-                log.info("💾 Saved LAST SMS to DB and forwarding...");
+                log.info("💾 Saved new SMS to DB and forwarding...");
 
                 routeMessage(sim, sms);
-
-                // sau khi xử lý → xoá tin để tránh đọc lại
-                int idx = extractSmsIndex(lastBlock);
-                if (idx > 0) {
-                    portManager.withPort(sim.getComName(), helper -> {
-                        try {
-                            helper.sendAndRead("AT+CMGD=" + idx, 2000);
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException(e);
-                        }
-                        return null;
-                    }, 3000L);
-                    log.debug("🗑️ Deleted SMS index={} trên {}", idx, sim.getComName());
-                }
-
             } else {
-                log.debug("⚠️ Duplicate LAST SMS ignored: {}", sms.getContent());
+                log.debug("⚠️ Duplicate SMS ignored: {}", sms.getContent());
             }
         } catch (Exception e) {
-            log.error("❌ Error processing LAST SMS on {}: {}", sim.getComName(), e.getMessage(), e);
+            log.error("❌ Error processing SMS on {}: {}", sim.getComName(), e.getMessage(), e);
         }
     }
-
     /** Lấy index tin nhắn từ +CMTI hoặc +CMGL */
     private int extractSmsIndex(String resp) {
         try {
