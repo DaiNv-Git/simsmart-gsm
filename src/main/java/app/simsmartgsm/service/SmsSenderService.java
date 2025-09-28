@@ -60,7 +60,6 @@ public class SmsSenderService {
         return "unknown";
     }
 
-
     public SmsMessage sendOne(String portName, String phoneNumber, String text) {
         String status = "FAIL";
         StringBuilder resp = new StringBuilder();
@@ -72,58 +71,73 @@ public class SmsSenderService {
                 port = openPort(portName);
 
                 try (OutputStream out = port.getOutputStream();
-                     InputStream in = port.getInputStream();
-                     Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
+                     InputStream in = port.getInputStream()) {
 
-                    // ===== Lấy số SIM gửi =====
-                    fromPhone = getSimPhoneNumber(out, scanner);
+                    // ==== Lấy số SIM gửi ====
+                    fromPhone = getSimPhoneNumber(out, new Scanner(in, StandardCharsets.US_ASCII));
 
-                    // ===== Set chế độ SMS =====
+                    // ==== Cấu hình cơ bản ====
                     sendCmd(out, "AT+CMGF=1");          // text mode
-                    sendCmd(out, "AT+CSCS=\"GSM\"");    // charset GSM
-                    sendCmd(out, "AT+CSCA?");           // check SMSC (log lại để debug)
+                    sendCmd(out, "AT+CSCS=\"GSM\"");    // charset
+                    sendCmd(out, "AT+CSCA?");           // check SMSC
 
-                    // ===== Gửi lệnh bắt đầu =====
+                    // ==== Bắt đầu gửi SMS ====
                     sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
 
-                    // ===== Chờ dấu nhắc '>' =====
+                    // ==== Chờ dấu '>' ====
                     boolean gotPrompt = false;
                     long waitStart = System.currentTimeMillis();
-                    while (System.currentTimeMillis() - waitStart < 5000 && in.available() > 0) {
-                        int b = in.read();
-                        if (b == '>') {
-                            gotPrompt = true;
-                            break;
+                    while (System.currentTimeMillis() - waitStart < 5000) {
+                        if (in.available() > 0) {
+                            int b = in.read();
+                            if (b == '>') {
+                                gotPrompt = true;
+                                log.debug("📥 Nhận dấu '>' từ modem {}", portName);
+                                break;
+                            }
                         }
                     }
                     if (!gotPrompt) {
                         log.warn("❌ Không nhận được dấu '>' từ modem {}", portName);
                         status = "FAIL";
-                        continue; // thử lại lần khác
+                        continue;
                     }
 
-                    // ===== Gửi nội dung tin nhắn =====
+                    // ==== Gửi nội dung SMS ====
                     out.write((text + "\r").getBytes(StandardCharsets.UTF_8));
                     out.write(0x1A); // Ctrl+Z
                     out.flush();
 
-                    // ===== Đọc phản hồi modem =====
+                    // ==== Đọc phản hồi modem ====
                     long start = System.currentTimeMillis();
-                    while (System.currentTimeMillis() - start < 30000 && scanner.hasNextLine()) {
-                        String line = scanner.nextLine().trim();
-                        if (!line.isEmpty()) {
-                            resp.append(line).append("\n");
-                            log.debug("[{}] modem resp: {}", portName, line);
+                    StringBuilder lineBuffer = new StringBuilder();
 
-                            if (line.contains("+CMGS")) {
-                                status = "OK";
-                            }
-                            if (line.contains("OK") && "OK".equals(status)) {
-                                break;
-                            }
-                            if (line.contains("ERROR") || line.contains("+CMS ERROR") || line.contains("+CME ERROR")) {
-                                status = "FAIL";
-                                break;
+                    while (System.currentTimeMillis() - start < 30000) {
+                        if (in.available() > 0) {
+                            int b = in.read();
+                            if (b == -1) break;
+
+                            char c = (char) b;
+                            if (c == '\r' || c == '\n') {
+                                String line = lineBuffer.toString().trim();
+                                if (!line.isEmpty()) {
+                                    resp.append(line).append("\n");
+                                    log.debug("[{}] modem resp: {}", portName, line);
+
+                                    if (line.contains("+CMGS")) {
+                                        status = "OK";
+                                    }
+                                    if (line.equals("OK") && "OK".equals(status)) {
+                                        break;
+                                    }
+                                    if (line.contains("ERROR") || line.contains("+CMS ERROR") || line.contains("+CME ERROR")) {
+                                        status = "FAIL";
+                                        break;
+                                    }
+                                }
+                                lineBuffer.setLength(0);
+                            } else {
+                                lineBuffer.append(c);
                             }
                         }
                     }
@@ -140,14 +154,14 @@ public class SmsSenderService {
             } catch (InterruptedException ignored) {}
         }
 
-        // ===== Build kết quả =====
+        // ==== Build kết quả ====
         SmsMessage saved = SmsMessage.builder()
                 .deviceName(getDeviceName())
                 .fromPort(portName)
                 .fromPhone(fromPhone)
                 .toPhone(phoneNumber)
                 .message(text)
-                .type(status.equals("OK") ? "OUTBOUND" : "OUTBOUND_FAIL")
+                .type("OK".equals(status) ? "OUTBOUND" : "OUTBOUND_FAIL")
                 .modemResponse(resp.toString().trim())
                 .timestamp(Instant.now())
                 .build();
