@@ -232,6 +232,40 @@ public class AtCommandHelper implements Closeable {
             try { port.closePort(); } catch (Exception ignored) {}
         }
     }
+    /** Lấy CCID (ICCID). */
+    public String getCcid() throws IOException, InterruptedException {
+        String r = sendAndRead("AT+CCID", 1500);
+        // ví dụ: +CCID: 8981100025977896009F
+        Matcher m = Pattern.compile("\\+?CCID\\s*:\\s*([0-9A-Fa-f]+)").matcher(r);
+        return m.find() ? m.group(1) : sanitizeSingleLine(r);
+    }
+    /**
+     * Làm sạch response 1 dòng (loại bỏ OK/ERROR và \r\n).
+     */
+    private static String sanitizeSingleLine(String s) {
+        if (s == null) return null;
+        String t = s.replaceAll("\\r|\\n|OK|ERROR", "").trim();
+        return t.isBlank() ? null : t;
+    }
+
+    /** Lấy IMSI (CIMI). */
+    public String getImsi() throws IOException, InterruptedException {
+        String r = sendAndRead("AT+CIMI", 1500);
+        Matcher m = Pattern.compile("(?m)^(\\d{5,20})$").matcher(r);
+        return m.find() ? m.group(1) : r.replaceAll("[^0-9]", "");
+    }
+
+    /** Lấy số điện thoại (nếu SIM lưu): AT+CNUM. */
+    public String getCnum() throws IOException, InterruptedException {
+        String r = sendAndRead("AT+CNUM", 1500);
+        // ví dụ: +CNUM: "","84901234567",145,7,0,4
+        Matcher m = Pattern.compile("\\+?CNUM:.*?\"(\\+?\\d{6,20})\"").matcher(r);
+        if (m.find()) return m.group(1);
+
+        // fallback: bắt chuỗi số dài trong dòng CNUM
+        m = Pattern.compile("\\+?CNUM:.*?(\\+?\\d{6,20})").matcher(r);
+        return m.find() ? m.group(1) : null;
+    }
 
     // ---------- DTO ----------
     public static class SmsRecord {
