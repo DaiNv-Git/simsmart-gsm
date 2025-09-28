@@ -142,28 +142,59 @@ public class SmsSenderService {
                      InputStream in = port.getInputStream();
                      Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
 
-                    // Lấy số SIM gửi
+                    // ==== Lấy số SIM gửi ====
                     fromPhone = getSimPhoneNumber(out, scanner);
 
-                    sendCmd(out, "AT+CMGF=1");
+                    // ==== Set chế độ text mode ====
+                    sendCmd(out, "AT+CMGF=1");          // text mode
+                    sendCmd(out, "AT+CSCS=\"GSM\"");    // charset GSM
+
+                    // ==== Kiểm tra SMSC ====
+                    sendCmd(out, "AT+CSCA?");
+                    // Nếu cần, có thể set SMSC thủ công:
+                    // sendCmd(out, "AT+CSCA=\"+81903101652\",145");
+
+                    // ==== Bắt đầu gửi SMS ====
                     sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
 
-                    Thread.sleep(500); // chờ dấu '>'
+                    // Đợi dấu nhắc '>'
+                    boolean gotPrompt = false;
+                    long waitStart = System.currentTimeMillis();
+                    while (System.currentTimeMillis() - waitStart < 3000 && scanner.hasNextLine()) {
+                        String line = scanner.nextLine().trim();
+                        if (!line.isEmpty()) {
+                            log.debug("[{}] CMGS prompt check: {}", portName, line);
+                            if (line.endsWith(">") || line.contains(">")) {
+                                gotPrompt = true;
+                                break;
+                            }
+                        }
+                    }
 
-                    out.write(text.getBytes(StandardCharsets.US_ASCII));
-                    out.write(0x1A);
+                    if (!gotPrompt) {
+                        log.warn("❌ Không nhận được dấu '>' từ modem {}", portName);
+                        status = "FAIL";
+                        continue; // thử lại
+                    }
+
+                    // Gửi nội dung SMS
+                    out.write((text + "\r").getBytes(StandardCharsets.UTF_8));
+                    out.write(0x1A); // Ctrl+Z
                     out.flush();
 
+                    // ==== Đợi phản hồi modem ====
                     long start = System.currentTimeMillis();
-                    while (System.currentTimeMillis() - start < 7000 && scanner.hasNextLine()) {
+                    while (System.currentTimeMillis() - start < 15000 && scanner.hasNextLine()) {
                         String line = scanner.nextLine().trim();
                         if (!line.isEmpty()) {
                             resp.append(line).append("\n");
+                            log.debug("[{}] CMGS resp: {}", portName, line);
+
                             if (line.contains("OK") || line.contains("+CMGS")) {
                                 status = "OK";
                                 break;
                             }
-                            if (line.contains("ERROR")) {
+                            if (line.contains("ERROR") || line.contains("+CMS ERROR") || line.contains("+CME ERROR")) {
                                 status = "FAIL";
                                 break;
                             }
@@ -182,13 +213,14 @@ public class SmsSenderService {
             } catch (InterruptedException ignored) {}
         }
 
+        // ==== Build kết quả ====
         SmsMessage saved = SmsMessage.builder()
                 .deviceName(getDeviceName())
                 .fromPort(portName)
                 .fromPhone(fromPhone)
                 .toPhone(phoneNumber)
                 .message(text)
-                .type(status.equals("OK") ? "OUTBOUND" : "OUTBOUND_FAIL") // đánh dấu rõ outbound
+                .type(status.equals("OK") ? "OUTBOUND" : "OUTBOUND_FAIL")
                 .modemResponse(resp.toString().trim())
                 .timestamp(Instant.now())
                 .build();
