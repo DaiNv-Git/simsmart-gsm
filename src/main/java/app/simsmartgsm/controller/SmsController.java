@@ -46,14 +46,19 @@ public class SmsController {
         try {
             portManager.withPort(comPort, helper -> {
                 try {
-                    helper.sendAndRead("AT+CMGF=1", 2000);   // text mode
-                    helper.sendAndRead("AT+CSCS=\"GSM\"", 2000); // charset
+                    helper.sendAndRead("AT+CMGF=1", 2000);          // text mode
+                    helper.sendAndRead("AT+CSCS=\"GSM\"", 2000);    // charset
 
-                    String resp = helper.sendAndRead("AT+CMGL=\"ALL\"", 10000);
-                    log.debug("📥 Raw SMS from {}:\n{}", comPort, resp);
+                    String[] stores = { "SM", "ME", "MT" };
+                    for (String store : stores) {
+                        helper.sendAndRead("AT+CPMS=\"" + store + "\",\"" + store + "\",\"" + store + "\"", 2000);
 
-                    if (resp != null && !resp.isBlank()) {
-                        result.addAll(SmsParser.parseMulti(resp));
+                        String resp = helper.sendAndRead("AT+CMGL=\"ALL\"", 10000);
+                        log.debug("📥 Raw SMS from {} store {}:\n{}", comPort, store, resp);
+
+                        if (resp != null && resp.contains("+CMGL:")) {
+                            result.addAll(SmsParser.parseMulti(resp));
+                        }
                     }
                 } catch (Exception e) {
                     log.error("❌ Error reading SMS on {}: {}", comPort, e.getMessage(), e);
@@ -62,6 +67,7 @@ public class SmsController {
             }, 15000L);
 
             return ResponseEntity.ok(result);
+
         } catch (Exception e) {
             log.error("❌ API readAllSms failed on {}: {}", comPort, e.getMessage(), e);
             return ResponseEntity.internalServerError().build();

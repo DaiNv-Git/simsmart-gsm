@@ -93,7 +93,9 @@ public class SmsParser {
                 if (i + 1 < lines.length) {
                     String content = lines[i + 1].trim();
                     if (!content.isBlank()) {
-                        messages.add(new SmsMessageUser(from, content));
+                        SmsMessageUser sms = new SmsMessageUser(from, content);
+                        messages.add(sms);
+                        log.info("✅ Parsed SMS: from={} content={}", from, content);
                     }
                 }
             }
