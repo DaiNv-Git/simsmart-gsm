@@ -1,6 +1,7 @@
 package app.simsmartgsm.service;
 import com.fazecast.jSerialComm.SerialPort;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -24,7 +25,7 @@ public class SimpleGsmClient implements AutoCloseable {
         log.info("✅ Opened GSM port {}", portName);
     }
 
-    public void sendSms(String number, String text) throws IOException {
+    public boolean sendSms(String number, String text) throws IOException {
         try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
             clearBuffer(in);
 
@@ -51,6 +52,7 @@ public class SimpleGsmClient implements AutoCloseable {
                 throw new IOException("❌ SMS failed, modem response: " + resp);
             }
         }
+        return true;
     }
 
     private void sendCmd(OutputStream out, String cmd) throws IOException {

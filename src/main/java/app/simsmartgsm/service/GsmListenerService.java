@@ -35,7 +35,6 @@ public class GsmListenerService {
     private final SmsSenderService smsSenderService;
     private final RemoteStompClientConfig remoteStompClientConfig;
     private final PortManager portManager;
-
     private final SmsMessageRepository smsMessageRepository;
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
     private final Set<String> runningListeners = ConcurrentHashMap.newKeySet();
@@ -55,6 +54,7 @@ public class GsmListenerService {
         final String receiverPort = sim.getComName();
         final String senderPort = pickSenderPort(receiverPort);
 
+        // auto-send OTP test nếu có service
         if (!services.isEmpty()) {
             String service = services.get(0);
             String key = sim.getId() + ":" + service.toLowerCase();
@@ -67,9 +67,13 @@ public class GsmListenerService {
 
                         log.info("📤 [INIT TEST] Sending SMS from {} -> {}: [{}]",
                                 senderPort, sim.getPhoneNumber(), msg);
-
-                        boolean ok = smsSenderService.sendSms(senderPort, sim.getPhoneNumber(), msg);
-                        log.info("📤 [INIT TEST] Result: {}", ok);
+                        SimpleGsmClient simpleSmsService = new SimpleGsmClient("COM77");
+                        boolean ok = simpleSmsService.sendSms(sim.getPhoneNumber(), msg);
+                        if (ok) {
+                            log.info("📤 [INIT TEST] Result: ✅ Sent successfully");
+                        } else {
+                            log.warn("📤 [INIT TEST] Result: ❌ Failed to send");
+                        }
                     } catch (Exception e) {
                         log.error("❌ Error auto-sending SMS: {}", e.getMessage(), e);
                     }
