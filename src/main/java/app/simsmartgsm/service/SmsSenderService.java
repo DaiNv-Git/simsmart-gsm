@@ -2,111 +2,37 @@ package app.simsmartgsm.service;
 
 import app.simsmartgsm.entity.SmsMessage;
 import com.fazecast.jSerialComm.SerialPort;
-import jakarta.annotation.PreDestroy;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.Map;
-import java.util.Scanner;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * SmsSenderService (async + per-port queue).
- *
- * Usage:
- *   CompletableFuture<SmsMessage> f = smsSenderService.sendSmsAsync("COM71", "0709...", "hi");
- *   f.whenComplete((msg, ex) -> { ... });
- */
 @Service
+@RequiredArgsConstructor
 @Slf4j
 public class SmsSenderService {
 
+    private final PortManager portManager;
     private static final int MAX_RETRY = 3;
 
-    // worker threads pool (for running per-port workers)
-    private final ExecutorService workerExecutor = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r);
-        t.setName("sms-worker-" + t.getId());
-        t.setDaemon(true);
-        return t;
-    });
+    /**
+     * Gửi SMS, trả về true nếu modem xác nhận gửi thành công.
+     */
+    public boolean sendSms(String portName, String toNumber, String message) {
+        SmsMessage result = sendOne(portName, toNumber, message);
+        log.info("📤 [{}] -> {} | status={} | resp={}",
+                portName, toNumber, result.getType(), result.getModemResponse());
+        return "OK".equals(result.getType()) || "SENT".equals(result.getType());
+    }
 
-    // map portName -> queue of tasks
-    private final ConcurrentHashMap<String, LinkedBlockingQueue<SendTask>> portQueues = new ConcurrentHashMap<>();
-
-    // map portName -> worker running flag
-    private final ConcurrentHashMap<String, AtomicBoolean> portWorkerRunning = new ConcurrentHashMap<>();
 
     /**
-     * Public async API: trả về CompletableFuture ngay, task được queue và xử lý tuần tự trên port tương ứng.
+     * Gửi 1 SMS, trả về SmsMessage chứa thông tin modem response.
      */
-    public CompletableFuture<SmsMessage> sendSmsAsync(String portName, String toNumber, String message) {
-        CompletableFuture<SmsMessage> future = new CompletableFuture<>();
-        SendTask task = new SendTask(portName, toNumber, message, future);
-
-        // lấy queue cho port, tạo nếu chưa có
-        LinkedBlockingQueue<SendTask> q = portQueues.computeIfAbsent(portName, k -> new LinkedBlockingQueue<>());
-        q.offer(task);
-
-        // ensure worker is running for this port
-        startWorkerIfNeeded(portName, q);
-        return future;
-    }
-
-    /**
-     * Khởi động worker cho port nếu chưa chạy
-     */
-    private void startWorkerIfNeeded(String portName, LinkedBlockingQueue<SendTask> queue) {
-        AtomicBoolean running = portWorkerRunning.computeIfAbsent(portName, k -> new AtomicBoolean(false));
-        if (running.compareAndSet(false, true)) {
-            workerExecutor.submit(() -> {
-                log.info("Worker started for port {}", portName);
-                try {
-                    while (true) {
-                        // poll with timeout để worker có thể tự stop nếu queue rỗng trong 60s
-                        SendTask task = queue.poll(60, TimeUnit.SECONDS);
-                        if (task == null) {
-                            // no task for a while => stop worker to free resources
-                            log.info("No tasks for port {} for 60s, stopping worker", portName);
-                            break;
-                        }
-                        try {
-                            // thực hiện gửi (blocking)
-                            SmsMessage res = sendOne(portName, task.toNumber, task.text);
-                            task.future.complete(res);
-                        } catch (Exception e) {
-                            log.error("Error while sending SMS on {}: {}", portName, e.getMessage(), e);
-                            task.future.completeExceptionally(e);
-                        }
-                    }
-                } catch (InterruptedException ie) {
-                    log.warn("Worker for {} interrupted", portName);
-                    Thread.currentThread().interrupt();
-                } finally {
-                    running.set(false);
-                    // nếu queue vẫn có task mới sau khi set false, ensure restart
-                    if (!queue.isEmpty()) {
-                        startWorkerIfNeeded(portName, queue);
-                    }
-                    log.info("Worker stopped for port {}", portName);
-                }
-            });
-        }
-    }
-
-    @PreDestroy
-    public void shutdown() {
-        log.info("Shutting down SmsSenderService workerExecutor");
-        workerExecutor.shutdownNow();
-    }
-
-    // -----------------------
-    // sendOne (blocking) - bạn đã có, mình giữ gần nguyên bản
-    // -----------------------
     public SmsMessage sendOne(String portName, String phoneNumber, String text) {
         String status = "FAIL";
         StringBuilder resp = new StringBuilder();
@@ -133,7 +59,7 @@ public class SmsSenderService {
                     sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
 
                     // chờ dấu '>'
-                    String prompt = waitForPrompt(in, 2000); // giảm còn 2s
+                    String prompt = waitForPrompt(in, 2000);
                     if (prompt == null) {
                         log.warn("❌ {}: không nhận được dấu '>'", portName);
                         status = "FAIL";
@@ -146,11 +72,11 @@ public class SmsSenderService {
                     out.flush();
 
                     // chờ phản hồi ngắn
-                    String modemResp = readResponse(in, 5000, resp); // giảm còn 5s
+                    String modemResp = readResponse(in, 5000, resp);
                     if (modemResp.contains("OK")) {
-                        status = "OK"; // modem xác nhận đã gửi
+                        status = "OK";   // modem xác nhận đã gửi
                     } else if (modemResp.contains("+CMGS")) {
-                        status = "SENT"; // modem chấp nhận, SMS sẽ đi
+                        status = "SENT"; // modem nhận, SMS đang gửi đi
                     } else {
                         status = "FAIL";
                     }
@@ -164,7 +90,7 @@ public class SmsSenderService {
 
             if ("OK".equals(status) || "SENT".equals(status)) break;
             try {
-                Thread.sleep((long) Math.pow(2, attempt) * 500); // backoff ngắn hơn (0.5s, 1s, 2s)
+                Thread.sleep((long) Math.pow(2, attempt) * 500); // backoff: 0.5s, 1s, 2s
             } catch (InterruptedException ignored) {}
         }
 
@@ -179,95 +105,57 @@ public class SmsSenderService {
                 .build();
     }
 
+    // --- Helper methods ---
+    private SerialPort openPort(String portName) {
+        SerialPort port = SerialPort.getCommPort(portName);
+        port.setBaudRate(115200);
+        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 3000, 3000);
+        if (!port.openPort()) {
+            throw new RuntimeException("❌ Cannot open port " + portName);
+        }
+        return port;
+    }
 
-    // ---------- helper (giữ nguyên / có thể tùy chỉnh) ----------
+    private void sendCmd(OutputStream out, String cmd) throws Exception {
+        String full = cmd + "\r";
+        out.write(full.getBytes(StandardCharsets.US_ASCII));
+        out.flush();
+        Thread.sleep(200);
+    }
+
     private String waitForPrompt(InputStream in, long timeoutMs) throws Exception {
         long start = System.currentTimeMillis();
+        StringBuilder sb = new StringBuilder();
         while (System.currentTimeMillis() - start < timeoutMs) {
-            if (in.available() > 0) {
-                int b = in.read();
-                if (b == '>') return ">";
+            while (in.available() > 0) {
+                char c = (char) in.read();
+                sb.append(c);
+                if (sb.toString().contains(">")) {
+                    return sb.toString();
+                }
             }
             Thread.sleep(50);
         }
         return null;
     }
 
-    private String readResponse(InputStream in, long timeoutMs, StringBuilder resp) throws Exception {
+    private String readResponse(InputStream in, long timeoutMs, StringBuilder collector) throws Exception {
         long start = System.currentTimeMillis();
-        StringBuilder lineBuffer = new StringBuilder();
-
+        StringBuilder sb = new StringBuilder();
         while (System.currentTimeMillis() - start < timeoutMs) {
-            if (in.available() > 0) {
-                int b = in.read();
-                if (b == -1) break;
-
-                char c = (char) b;
-                if (c == '\r' || c == '\n') {
-                    String line = lineBuffer.toString().trim();
-                    if (!line.isEmpty()) {
-                        resp.append(line).append("\n");
-                        log.debug("📥 modem resp: {}", line);
-                    }
-                    lineBuffer.setLength(0);
-                } else {
-                    lineBuffer.append(c);
+            while (in.available() > 0) {
+                char c = (char) in.read();
+                sb.append(c);
+                collector.append(c);
+                String resp = sb.toString();
+                if (resp.contains("OK") || resp.contains("ERROR")
+                        || resp.contains("+CMS ERROR") || resp.contains("+CME ERROR")
+                        || resp.contains("+CMGS")) {
+                    return resp;
                 }
             }
-            Thread.sleep(20);
+            Thread.sleep(50);
         }
-        return resp.toString();
-    }
-
-    private SerialPort openPort(String portName) {
-        SerialPort port = SerialPort.getCommPort(portName);
-        port.setBaudRate(115200);
-        // set timeout non-blocking small read, because we control blocking in readResponse
-        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 1000, 1000);
-        if (!port.openPort()) throw new RuntimeException("Không mở được port " + portName);
-        return port;
-    }
-
-    private void sendCmd(OutputStream out, String cmd) throws Exception {
-        String fullCmd = cmd + "\r";
-        out.write(fullCmd.getBytes(StandardCharsets.US_ASCII));
-        out.flush();
-        log.debug("➡️ CMD: {}", cmd);
-        Thread.sleep(200); // small delay tránh modem bị nghẽn
-    }
-
-    private String getSimPhoneNumber(OutputStream out, Scanner sc) throws Exception {
-        sendCmd(out, "AT+CNUM");
-        long start = System.currentTimeMillis();
-        while (System.currentTimeMillis() - start < 2000) {
-            if (sc.hasNextLine()) {
-                String line = sc.nextLine();
-                if (line.contains("+CNUM")) {
-                    String[] parts = line.split(",");
-                    if (parts.length > 1) {
-                        return parts[1].replaceAll("\"", "").trim();
-                    }
-                }
-            }
-        }
-        return "unknown";
-    }
-    public boolean sendSms(String portName, String toNumber, String message) {
-        SmsMessage result = sendOne(portName, toNumber, message);
-        return "OK".equals(result.getType()) || "SENT".equals(result.getType());
-    }
-    // ---------- internal task ----------
-    private static class SendTask {
-        final String portName;
-        final String toNumber;
-        final String text;
-        final CompletableFuture<SmsMessage> future;
-
-        SendTask(String portName, String toNumber, String text, CompletableFuture<SmsMessage> future) {
-            this.portName = portName;
-            this.toNumber = toNumber;
-            this.text = text;
-            this.future = future;
-        }
+        return sb.toString();
     }
 }
