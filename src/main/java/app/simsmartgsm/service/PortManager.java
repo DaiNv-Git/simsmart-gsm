@@ -15,6 +15,7 @@ import java.util.function.Function;
 @Slf4j
 public class PortManager {
     private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, SerialPort> ports = new ConcurrentHashMap<>();
 
     public <T> T withPort(String com, Function<AtCommandHelper, T> task, long timeoutMs) {
         ReentrantLock lock = locks.computeIfAbsent(com, k -> new ReentrantLock());
@@ -78,7 +79,28 @@ public class PortManager {
         log.error("❌ {} thất bại sau 3 lần thử", com);
         return null;
     }
+    
+    public static synchronized SerialPort getPort(String portName) {
+        return ports.computeIfAbsent(portName, name -> {
+            SerialPort port = SerialPort.getCommPort(name);
+            port.setBaudRate(115200);
+            port.setNumDataBits(8);
+            port.setNumStopBits(SerialPort.ONE_STOP_BIT);
+            port.setParity(SerialPort.NO_PARITY);
+            if (!port.openPort()) {
+                throw new RuntimeException("❌ Cannot open port " + name);
+            }
+            return port;
+        });
+    }
 
+    public static synchronized void closePort(String portName) {
+        SerialPort port = ports.remove(portName);
+        if (port != null && port.isOpen()) {
+            port.closePort();
+        }
+    }
+    
     private void safeSleep(long ms) {
         try {
             Thread.sleep(ms);

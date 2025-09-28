@@ -26,34 +26,28 @@ public class SimpleGsmClient implements AutoCloseable {
     }
 
     public boolean sendSms(String number, String text) throws IOException {
-        try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
-            clearBuffer(in);
+        synchronized (port) {
+            try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
+                clearBuffer(in);
+                sendCmd(out, "AT"); waitForOk(in);
+                sendCmd(out, "AT+CMGF=1"); waitForOk(in);
+                sendCmd(out, "AT+CMGS=\"" + number + "\""); waitForPrompt(in);
 
-            // Bật text mode
-            sendCmd(out, "AT");
-            waitForOk(in);
+                out.write((text + "\r").getBytes(StandardCharsets.UTF_8));
+                out.write(0x1A); // Ctrl+Z
+                out.flush();
 
-            sendCmd(out, "AT+CMGF=1"); // text mode
-            waitForOk(in);
-
-            // Bắt đầu gửi SMS
-            sendCmd(out, "AT+CMGS=\"" + number + "\"");
-            waitForPrompt(in);
-
-            // Gửi nội dung + Ctrl+Z
-            out.write((text + "\r").getBytes(StandardCharsets.UTF_8));
-            out.write(0x1A); // Ctrl+Z
-            out.flush();
-
-            String resp = readUntilOkOrError(in, 30000);
-            if (resp.contains("OK")) {
-                log.info("📤 SMS sent successfully to {}", number);
-            } else {
-                throw new IOException("❌ SMS failed, modem response: " + resp);
+                String resp = readUntilOkOrError(in, 30000);
+                if (resp.contains("OK")) {
+                    log.info("📤 SMS sent successfully to {}", number);
+                    return true;
+                } else {
+                    throw new IOException("❌ SMS failed, modem response: " + resp);
+                }
             }
         }
-        return true;
     }
+
 
     private void sendCmd(OutputStream out, String cmd) throws IOException {
         String full = cmd + "\r";
@@ -179,9 +173,9 @@ public class SimpleGsmClient implements AutoCloseable {
     
     @Override
     public void close() {
-        if (port != null && port.isOpen()) {
-            port.closePort();
-            log.info("🔌 Closed GSM port {}", port.getSystemPortName());
-        }
+//        if (port != null && port.isOpen()) {
+//            port.closePort();
+//            log.info("🔌 Closed GSM port {}", port.getSystemPortName());
+//        }
     }
 }
