@@ -128,109 +128,6 @@ public class SmsSenderService {
 
         return smsRepo.save(saved);
     }
-    public SmsMessage sendOne(String portName, String phoneNumber, String text, boolean saveToDb) {
-        String status = "FAIL";
-        StringBuilder resp = new StringBuilder();
-        String fromPhone = "unknown";
-
-        for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
-            SerialPort port = null;
-            try {
-                port = openPort(portName);
-
-                try (OutputStream out = port.getOutputStream();
-                     InputStream in = port.getInputStream();
-                     Scanner scanner = new Scanner(in, StandardCharsets.US_ASCII)) {
-
-                    // ==== Lấy số SIM gửi ====
-                    fromPhone = getSimPhoneNumber(out, scanner);
-
-                    // ==== Set chế độ text mode ====
-                    sendCmd(out, "AT+CMGF=1");          // text mode
-                    sendCmd(out, "AT+CSCS=\"GSM\"");    // charset GSM
-
-                    // ==== Kiểm tra SMSC ====
-                    sendCmd(out, "AT+CSCA?");
-                    // Nếu cần, có thể set SMSC thủ công:
-                    // sendCmd(out, "AT+CSCA=\"+81903101652\",145");
-
-                    // ==== Bắt đầu gửi SMS ====
-                    sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
-
-                    // Đợi dấu nhắc '>'
-                    boolean gotPrompt = false;
-                    long waitStart = System.currentTimeMillis();
-                    while (System.currentTimeMillis() - waitStart < 3000 && scanner.hasNextLine()) {
-                        String line = scanner.nextLine().trim();
-                        if (!line.isEmpty()) {
-                            log.debug("[{}] CMGS prompt check: {}", portName, line);
-                            if (line.endsWith(">") || line.contains(">")) {
-                                gotPrompt = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!gotPrompt) {
-                        log.warn("❌ Không nhận được dấu '>' từ modem {}", portName);
-                        status = "FAIL";
-                        continue; // thử lại
-                    }
-
-                    // Gửi nội dung SMS
-                    out.write((text + "\r").getBytes(StandardCharsets.UTF_8));
-                    out.write(0x1A); // Ctrl+Z
-                    out.flush();
-
-                    // ==== Đợi phản hồi modem ====
-                    long start = System.currentTimeMillis();
-                    while (System.currentTimeMillis() - start < 15000 && scanner.hasNextLine()) {
-                        String line = scanner.nextLine().trim();
-                        if (!line.isEmpty()) {
-                            resp.append(line).append("\n");
-                            log.debug("[{}] CMGS resp: {}", portName, line);
-
-                            if (line.contains("OK") || line.contains("+CMGS")) {
-                                status = "OK";
-                                break;
-                            }
-                            if (line.contains("ERROR") || line.contains("+CMS ERROR") || line.contains("+CME ERROR")) {
-                                status = "FAIL";
-                                break;
-                            }
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                log.warn("⚠️ Lỗi gửi SMS lần {}/{} qua {} -> {}: {}", attempt, MAX_RETRY, portName, phoneNumber, e.getMessage());
-            } finally {
-                if (port != null && port.isOpen()) port.closePort();
-            }
-
-            if ("OK".equals(status)) break;
-            try {
-                Thread.sleep(1000);
-            } catch (InterruptedException ignored) {}
-        }
-
-        // ==== Build kết quả ====
-        SmsMessage saved = SmsMessage.builder()
-                .deviceName(getDeviceName())
-                .fromPort(portName)
-                .fromPhone(fromPhone)
-                .toPhone(phoneNumber)
-                .message(text)
-                .type(status.equals("OK") ? "OUTBOUND" : "OUTBOUND_FAIL")
-                .modemResponse(resp.toString().trim())
-                .timestamp(Instant.now())
-                .build();
-
-        if (saveToDb) {
-            return smsRepo.save(saved);
-        } else {
-            return saved;
-        }
-    }
 
     // === Gửi nhiều số cùng 1 nội dung ===
     public List<SmsMessage> sendBulk(List<String> phones, String text, String portName) {
@@ -255,6 +152,6 @@ public class SmsSenderService {
 
     // === Shortcut: gửi 1 SMS không lưu DB (cho test nhanh) ===
     public boolean sendSms(String comName, String phoneNumber, String message) {
-        return "OK".equals(sendOne(comName, phoneNumber, message,false).getType());
+        return "OK".equals(sendOne(comName, phoneNumber, message).getType());
     }
 }
