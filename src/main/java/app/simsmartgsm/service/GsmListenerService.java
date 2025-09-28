@@ -82,32 +82,24 @@ public class GsmListenerService {
 
                 while (true) {
                     portManager.withPort(sim.getComName(), helper -> {
-                        List<AtCommandHelper.SmsRecord> smsList = null;
                         try {
-                            smsList = helper.listAllSmsText(5000);
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException(e);
-                        }
-                        for (var rec : smsList) {
-                            if (rec.body != null && containsOtp(rec.body)) {
-                                processSms(sim, rec);
-                                if (rec.index != null) {
-                                    try {
+                            var smsList = helper.listAllSmsText(5000);
+                            for (var rec : smsList) {
+                                if (rec.body != null && containsOtp(rec.body)) {
+                                    processSms(sim, rec);
+                                    if (rec.index != null) {
                                         helper.deleteSms(rec.index);
-                                    } catch (IOException e) {
-                                        throw new RuntimeException(e);
-                                    } catch (InterruptedException e) {
-                                        throw new RuntimeException(e);
                                     }
                                 }
                             }
+                        } catch (Exception e) {
+                            log.error("❌ Error scanning SMS {}: {}", sim.getComName(), e.getMessage(), e);
                         }
                         return null;
                     }, 8000L);
 
-                    Thread.sleep(3000);
+                    // --- nghỉ 7 giây trước lần scan tiếp theo ---
+                    Thread.sleep(7000);
 
                     // stop nếu không còn session active
                     if (activeSessions.getOrDefault(sim.getId(), List.of())
@@ -123,6 +115,7 @@ public class GsmListenerService {
             }
         }).start();
     }
+
 
     // === Xử lý SMS nhận về ===
     private void processSms(Sim sim, AtCommandHelper.SmsRecord rec) {
