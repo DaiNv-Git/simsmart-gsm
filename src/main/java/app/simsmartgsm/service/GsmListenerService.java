@@ -113,12 +113,16 @@ public class GsmListenerService {
                     // Dùng PortManager để đảm bảo an toàn khi mở cổng
                     portManager.withPort(sim.getComName(), helper -> {
                         try {
-                            // cấu hình modem 1 lần khi mở port
-                            helper.sendAndRead("AT+CMGF=1", 2000);
-                            helper.sendAndRead("AT+CNMI=2,1,0,0,0", 2000);
-
                             // Đọc inbox (có thể thay bằng AT+CMGL="REC UNREAD")
                             String resp = helper.sendAndRead("AT+CMGL=\"REC UNREAD\"", 5000);
+                            helper.sendAndRead("AT+CMGF=1", 2000);
+                            helper.sendAndRead("AT+CPMS=\"ME\",\"ME\",\"ME\"", 2000);
+                            helper.sendAndRead("AT+CNMI=2,1,0,0,0", 2000);
+
+                            if (resp == null || !resp.contains("+CMGL:")) {
+                                log.debug("📭 No UNREAD, fallback to ALL");
+                                resp = helper.sendAndRead("AT+CMGL=\"ALL\"", 5000);
+                            }
 
                             if (resp != null && !resp.isBlank()) {
                                 log.debug("📥 Raw SMS buffer ({}):\n{}", sim.getComName(), resp);
