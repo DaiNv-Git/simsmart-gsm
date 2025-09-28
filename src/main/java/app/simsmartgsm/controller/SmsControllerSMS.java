@@ -13,14 +13,20 @@ public class SmsControllerSMS {
             @RequestParam String comPort,
             @RequestParam String toNumber,
             @RequestParam String message) {
-        try (SimpleGsmClient client = new SimpleGsmClient(comPort)) {
+        try {
+            // Lấy client với port do PortManager quản lý
+            SimpleGsmClient client = new SimpleGsmClient(comPort);
+
+            // Gửi SMS (bên trong đã có synchronized theo port)
             client.sendSms(toNumber, message);
+
             return ResponseEntity.ok("✅ SMS sent successfully to " + toNumber);
         } catch (Exception e) {
             log.error("❌ Error sending SMS via {}: {}", comPort, e.getMessage(), e);
             return ResponseEntity.internalServerError().body("❌ " + e.getMessage());
         }
     }
+
 
     /**
      * Đọc tất cả SMS
