@@ -14,6 +14,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.stomp.StompSession;
 import org.springframework.stereotype.Service;
+
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -75,7 +79,7 @@ public class GsmListenerService {
     }
 
     private String pickSenderPort(String receiverPort) {
-        String configured = "COM100";
+        String configured = "COM76";
         if (configured != null && !configured.equalsIgnoreCase(receiverPort)) {
             return configured;
         }
@@ -114,7 +118,7 @@ public class GsmListenerService {
                             helper.sendAndRead("AT+CNMI=2,1,0,0,0", 2000);
 
                             // Đọc inbox (có thể thay bằng AT+CMGL="REC UNREAD")
-                            String resp = helper.sendAndRead("AT+CMGL=\"REC UNREAD", 5000);
+                            String resp = helper.sendAndRead("AT+CMGL=\"ALL\"", 5000);
 
                             if (resp != null && !resp.isBlank()) {
                                 log.debug("📥 Raw SMS buffer ({}):\n{}", sim.getComName(), resp);
@@ -143,14 +147,10 @@ public class GsmListenerService {
         }).start();
     }
 
+
     private void processSmsResponse(Sim sim, String resp) {
         try {
             SmsMessageUser sms = SmsParser.parse(resp);
-
-            if (sms == null) {
-                log.debug("⚠️ No valid SMS parsed from resp on {}: {}", sim.getComName(), resp.replace("\r","").replace("\n"," "));
-                return;
-            }
 
             log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
 
@@ -212,28 +212,26 @@ public class GsmListenerService {
             for (String service : s.getServices()) {
                 String serviceNorm = normalize(service);
                 if (contentNorm.contains(serviceNorm) && containsOtp(sms.getContent())) {
-                    forwarded = forwardToSocket(sim, s, service, sms) || forwarded;
+                    forwarded |= forwardToSocket(sim, s, service, sms);
+                } else {
+                    log.debug("❌ Not matched service='{}' content='{}'", service, sms.getContent());
                 }
             }
         }
 
-        // ❌ bỏ fallback reuse service sai
         if (!forwarded && containsOtp(sms.getContent())) {
-            log.warn("⚠️ OTP found but no matching service for SMS='{}'", sms.getContent());
-
-            RentSession firstActive = sessions.stream()
-                    .filter(RentSession::isActive)
-                    .findFirst()
-                    .orElse(null);
-
+            RentSession firstActive = sessions.stream().filter(RentSession::isActive).findFirst().orElse(null);
             if (firstActive != null) {
-                forwardToSocket(sim, firstActive, "UNKNOWN", sms); // mark rõ UNKNOWN
+                String service = firstActive.getServices().isEmpty() ? "UNKNOWN" : firstActive.getServices().get(0);
+                log.info("↪️ Fallback forward with service='{}' (no exact match).", service);
+                forwardToSocket(sim, firstActive, service, sms);
+            } else {
+                log.warn("⚠️ Has OTP but no active session to forward.");
             }
         }
 
         sessions.removeIf(s -> !s.isActive());
     }
-
 
     private boolean forwardToSocket(Sim sim, RentSession s, String service, SmsMessageUser sms) {
         String otp = extractOtp(sms.getContent());
