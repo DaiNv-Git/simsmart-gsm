@@ -146,11 +146,16 @@ public class GsmListenerService {
             }
         }).start();
     }
-
-
+    
     private void processSmsResponse(Sim sim, String resp) {
         try {
             SmsMessageUser sms = SmsParser.parse(resp);
+
+            if (sms == null) {
+                log.warn("⚠️ No valid SMS parsed on {}. Raw:\n{}", sim.getComName(),
+                        resp.replace("\r", " ").replace("\n", " "));
+                return; // ⛔ stop tại đây để tránh NullPointer
+            }
 
             log.info("✅ Parsed SMS from {} content={}", sms.getFrom(), sms.getContent());
 
@@ -182,10 +187,9 @@ public class GsmListenerService {
                 log.debug("⚠️ Duplicate SMS ignored: {}", sms.getContent());
             }
         } catch (Exception e) {
-            log.error("❌ Error processing SMS: {}", e.getMessage(), e);
+            log.error("❌ Error processing SMS on {}: {}", sim.getComName(), e.getMessage(), e);
         }
     }
-
     /** Lấy index tin nhắn từ +CMTI hoặc +CMGL */
     private int extractSmsIndex(String resp) {
         try {
