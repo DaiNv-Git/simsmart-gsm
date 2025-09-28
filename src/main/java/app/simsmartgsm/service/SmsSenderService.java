@@ -120,57 +120,51 @@ public class SmsSenderService {
                 try (OutputStream out = port.getOutputStream();
                      InputStream in = port.getInputStream()) {
 
-                    Scanner sc = new Scanner(in, StandardCharsets.US_ASCII);
-
-                    // === clear buffer trước khi bắt đầu ===
+                    // clear buffer
                     while (in.available() > 0) in.read();
 
-                    // === lấy số SIM gửi ===
-                    fromPhone = getSimPhoneNumber(out, sc);
-
-                    // === config cơ bản ===
+                    // config cơ bản
                     sendCmd(out, "AT");
                     sendCmd(out, "AT+CMGF=1");          // text mode
                     sendCmd(out, "AT+CSCS=\"GSM\"");    // charset
-                    sendCmd(out, "AT+CNMI=2,1,0,1,0");  // enable push DLR
-                    sendCmd(out, "AT+CMGD=1,4");        // xoá toàn bộ inbox, tránh đầy bộ nhớ
+                    sendCmd(out, "AT+CNMI=2,1,0,1,0");  // push DLR
 
-                    // === chuẩn bị gửi SMS ===
+                    // chuẩn bị gửi
                     sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
 
-                    // === chờ dấu '>' ===
-                    String prompt = waitForPrompt(in, 10000); // tăng timeout lên 10s cho chắc
+                    // chờ dấu '>'
+                    String prompt = waitForPrompt(in, 2000); // giảm còn 2s
                     if (prompt == null) {
                         log.warn("❌ {}: không nhận được dấu '>'", portName);
                         status = "FAIL";
-                        Thread.sleep((long) Math.pow(2, attempt) * 1000);
                         continue;
                     }
 
-                    // === gửi nội dung SMS ===
+                    // gửi nội dung
                     out.write((text + "\r").getBytes(StandardCharsets.UTF_8));
                     out.write(0x1A); // Ctrl+Z
                     out.flush();
 
-                    // === đọc phản hồi ===
-                    String modemResp = readResponse(in, 30000, resp);
-                    if (modemResp.contains("OK") || modemResp.contains("+CDS:")) {
-                        status = "OK";
+                    // chờ phản hồi ngắn
+                    String modemResp = readResponse(in, 5000, resp); // giảm còn 5s
+                    if (modemResp.contains("OK")) {
+                        status = "OK"; // modem xác nhận đã gửi
                     } else if (modemResp.contains("+CMGS")) {
-                        status = "SENT";
+                        status = "SENT"; // modem chấp nhận, SMS sẽ đi
                     } else {
                         status = "FAIL";
                     }
                 }
             } catch (Exception e) {
-                log.warn("⚠️ Lỗi gửi SMS lần {}/{} qua {} -> {}: {}", attempt, MAX_RETRY, portName, phoneNumber, e.getMessage());
+                log.warn("⚠️ Lỗi gửi SMS lần {}/{} qua {} -> {}: {}", attempt, MAX_RETRY,
+                        portName, phoneNumber, e.getMessage());
             } finally {
                 if (port != null && port.isOpen()) port.closePort();
             }
 
             if ("OK".equals(status) || "SENT".equals(status)) break;
             try {
-                Thread.sleep((long) Math.pow(2, attempt) * 1000);
+                Thread.sleep((long) Math.pow(2, attempt) * 500); // backoff ngắn hơn (0.5s, 1s, 2s)
             } catch (InterruptedException ignored) {}
         }
 
@@ -184,6 +178,7 @@ public class SmsSenderService {
                 .timestamp(Instant.now())
                 .build();
     }
+
 
     // ---------- helper (giữ nguyên / có thể tùy chỉnh) ----------
     private String waitForPrompt(InputStream in, long timeoutMs) throws Exception {
