@@ -174,46 +174,7 @@ public class SimpleGsmClient implements AutoCloseable {
             log.info("🗑️ Deleted all SMS in modem {}", port.getSystemPortName());
         }
     }
-    public String readLatestSms() throws IOException {
-        try (OutputStream out = port.getOutputStream(); InputStream in = port.getInputStream()) {
-            clearBuffer(in);
-
-            sendCmd(out, "AT");
-            waitForOk(in);
-
-            sendCmd(out, "AT+CMGF=1"); // text mode
-            waitForOk(in);
-
-            sendCmd(out, "AT+CMGL=\"ALL\"");
-            String resp = readUntilOkOrError(in, 10000);
-
-            log.info("📥 Raw ReadLatestSms resp:\n{}", resp);
-
-            // tách theo dòng, lấy SMS cuối
-            String[] lines = resp.split("\r\n|\n");
-            StringBuilder lastSms = new StringBuilder();
-            boolean capture = false;
-            for (String line : lines) {
-                if (line.startsWith("+CMGL:")) {
-                    // reset buffer, bắt đầu SMS mới
-                    lastSms.setLength(0);
-                    capture = true;
-                    lastSms.append(line).append("\n");
-                } else if (capture) {
-                    // tiếp tục gom nội dung SMS
-                    lastSms.append(line).append("\n");
-                }
-            }
-
-            if (lastSms.length() > 0) {
-                String sms = lastSms.toString().trim();
-                log.info("📩 Latest SMS: \n{}", sms);
-                return sms;
-            } else {
-                log.info("ℹ️ No SMS found in modem {}", port.getSystemPortName());
-                return "";
-            }
-        }}
+    
     @Override
     public void close() {
         if (port != null && port.isOpen()) {

@@ -63,19 +63,6 @@ public class SmsControllerSMS {
             return ResponseEntity.internalServerError().body("❌ " + e.getMessage());
         }
     }
-
-    @GetMapping("/read-latest")
-    public ResponseEntity<String> readLatest(@RequestParam String comPort) {
-        try (SimpleGsmClient client = new SimpleGsmClient(comPort)) {
-            String resp = client.readLatestSms();
-            if (resp.isEmpty()) {
-                return ResponseEntity.ok("ℹ️ No SMS found");
-            }
-            return ResponseEntity.ok(resp);
-        } catch (Exception e) {
-            log.error("❌ Error reading latest SMS via {}: {}", comPort, e.getMessage(), e);
-            return ResponseEntity.internalServerError().body("❌ " + e.getMessage());
-        }
-    }
+    
     
 }
