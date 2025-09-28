@@ -179,6 +179,14 @@ public class AtCommandHelper implements Closeable {
         String finalResp = readUntilMarkers((int) Math.max(4000, totalTimeout.toMillis()), "OK", "ERROR", "+CMGS");
         return finalResp.contains("OK") || finalResp.contains("+CMGS");
     }
+    /** Xoá 1 SMS theo index trong bộ nhớ hiện tại (SM/ME). */
+    public boolean deleteSms(int index) throws IOException, InterruptedException {
+        // Một số modem chấp nhận "AT+CMGD=<idx>", số khác cần "AT+CMGD=<idx>,0".
+        // Thử lần 1 (không delflag):
+        if (sendAtOk("AT+CMGD=" + index, 2000)) return true;
+        // Thử lần 2 (delflag=0: delete message at location <index>):
+        return sendAtOk("AT+CMGD=" + index + ",0", 2000);
+    }
 
     public List<SmsRecord> listUnreadSmsText(int timeoutMs) throws IOException, InterruptedException {
         setTextMode(true);
