@@ -3,6 +3,8 @@ package app.simsmartgsm.config;
 import app.simsmartgsm.dto.response.SmsMessageUser;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -74,5 +76,28 @@ public class SmsParser {
 
         return null;
     }
+    public static List<SmsMessageUser> parseMulti(String resp) {
+        List<SmsMessageUser> messages = new ArrayList<>();
+        if (resp == null || resp.isBlank()) return messages;
 
+        String[] lines = resp.split("\r\n|\n");
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i].trim();
+
+            if (line.startsWith("+CMGL:") || line.startsWith("+CMGR:")) {
+                String from = "UNKNOWN";
+                Matcher m = Pattern.compile("\"(\\+?\\d+)\"").matcher(line);
+                if (m.find()) {
+                    from = m.group(1);
+                }
+                if (i + 1 < lines.length) {
+                    String content = lines[i + 1].trim();
+                    if (!content.isBlank()) {
+                        messages.add(new SmsMessageUser(from, content));
+                    }
+                }
+            }
+        }
+        return messages;
+    }
 }
