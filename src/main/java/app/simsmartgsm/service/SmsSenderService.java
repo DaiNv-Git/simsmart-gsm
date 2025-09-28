@@ -36,82 +36,44 @@ public class SmsSenderService {
 
                     Scanner sc = new Scanner(in, StandardCharsets.US_ASCII);
 
-                    // ==== Lấy số SIM gửi ====
+                    // === clear buffer trước khi bắt đầu ===
+                    while (in.available() > 0) in.read();
+
+                    // === lấy số SIM gửi ===
                     fromPhone = getSimPhoneNumber(out, sc);
 
-                    // ==== Cấu hình cơ bản ====
+                    // === config cơ bản ===
+                    sendCmd(out, "AT");
                     sendCmd(out, "AT+CMGF=1");          // text mode
                     sendCmd(out, "AT+CSCS=\"GSM\"");    // charset
-                    sendCmd(out, "AT+CSCA?");           // SMSC
-                    sendCmd(out, "AT+CSMP=49,167,0,0"); // enable delivery report
-                    sendCmd(out, "AT+CNMI=2,1,0,1,0");  // push delivery report to TE
+                    sendCmd(out, "AT+CNMI=2,1,0,1,0");  // enable push DLR
+                    sendCmd(out, "AT+CMGD=1,4");        // xoá toàn bộ inbox, tránh đầy bộ nhớ
 
-                    // ==== Bắt đầu gửi SMS ====
+                    // === chuẩn bị gửi SMS ===
                     sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
 
-                    // ==== Chờ dấu '>' ====
-                    boolean gotPrompt = false;
-                    long waitStart = System.currentTimeMillis();
-                    while (System.currentTimeMillis() - waitStart < 5000) {
-                        if (in.available() > 0) {
-                            int b = in.read();
-                            if (b == '>') {
-                                gotPrompt = true;
-                                log.debug("📥 Nhận dấu '>' từ modem {}", portName);
-                                break;
-                            }
-                        }
-                    }
-                    if (!gotPrompt) {
-                        log.warn("❌ Không nhận được dấu '>' từ modem {}", portName);
+                    // === chờ dấu '>' ===
+                    String prompt = waitForPrompt(in, 5000);
+                    if (prompt == null) {
+                        log.warn("❌ {}: không nhận được dấu '>'", portName);
                         status = "FAIL";
-                        Thread.sleep((long) Math.pow(2, attempt) * 1000); // backoff
+                        Thread.sleep((long) Math.pow(2, attempt) * 1000);
                         continue;
                     }
 
-                    // ==== Gửi nội dung SMS ====
+                    // === gửi nội dung SMS ===
                     out.write((text + "\r").getBytes(StandardCharsets.UTF_8));
                     out.write(0x1A); // Ctrl+Z
                     out.flush();
 
-                    // ==== Đọc phản hồi modem ====
-                    long start = System.currentTimeMillis();
-                    StringBuilder lineBuffer = new StringBuilder();
-
-                    while (System.currentTimeMillis() - start < 30000) {
-                        if (in.available() > 0) {
-                            int b = in.read();
-                            if (b == -1) break;
-
-                            char c = (char) b;
-                            if (c == '\r' || c == '\n') {
-                                String line = lineBuffer.toString().trim();
-                                if (!line.isEmpty()) {
-                                    resp.append(line).append("\n");
-                                    log.debug("[{}] modem resp: {}", portName, line);
-
-                                    if (line.contains("+CMGS")) {
-                                        status = "SENT"; // modem chấp nhận
-                                    }
-                                    if (line.contains("+CDS:")) {
-                                        log.info("📩 Delivery report nhận từ modem {}: {}", portName, line);
-                                        status = "OK"; // xác nhận SMSC đã deliver
-                                        break;
-                                    }
-                                    if (line.equals("OK") && "SENT".equals(status)) {
-                                        // chưa có CDS nhưng modem đã gửi đi
-                                        log.info("✅ Modem {} báo đã gửi SMS (chưa có Delivery Report)", portName);
-                                    }
-                                    if (line.contains("ERROR") || line.contains("+CMS ERROR") || line.contains("+CME ERROR")) {
-                                        status = "FAIL";
-                                        break;
-                                    }
-                                }
-                                lineBuffer.setLength(0);
-                            } else {
-                                lineBuffer.append(c);
-                            }
-                        }
+                    // === đọc phản hồi ===
+                    String modemResp = readResponse(in, 30000, resp);
+                    if (modemResp.contains("OK") || modemResp.contains("+CDS:")) {
+                        status = "OK";
+                    } else if (modemResp.contains("+CMGS")) {
+                        status = "SENT";
+                    } else {
+                        status = "FAIL";
                     }
                 }
             } catch (Exception e) {
@@ -120,24 +82,59 @@ public class SmsSenderService {
                 if (port != null && port.isOpen()) port.closePort();
             }
 
-            if ("OK".equals(status)) break; // success
+            if ("OK".equals(status) || "SENT".equals(status)) break;
             try {
-                Thread.sleep((long) Math.pow(2, attempt) * 1000); // exponential backoff
+                Thread.sleep((long) Math.pow(2, attempt) * 1000);
             } catch (InterruptedException ignored) {}
         }
 
-        SmsMessage msg = SmsMessage.builder()
+        return SmsMessage.builder()
                 .fromPort(portName)
                 .fromPhone(fromPhone)
                 .toPhone(phoneNumber)
                 .message(text)
                 .modemResponse(resp.toString())
-                .type(status)              // OK / SENT / FAIL
+                .type(status)  // OK / SENT / FAIL
                 .timestamp(Instant.now())
                 .build();
-
-        return msg;
     }
+    private String waitForPrompt(InputStream in, long timeoutMs) throws Exception {
+        long start = System.currentTimeMillis();
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            if (in.available() > 0) {
+                int b = in.read();
+                if (b == '>') return ">";
+            }
+            Thread.sleep(50);
+        }
+        return null;
+    }
+
+    private String readResponse(InputStream in, long timeoutMs, StringBuilder resp) throws Exception {
+        long start = System.currentTimeMillis();
+        StringBuilder lineBuffer = new StringBuilder();
+
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            if (in.available() > 0) {
+                int b = in.read();
+                if (b == -1) break;
+
+                char c = (char) b;
+                if (c == '\r' || c == '\n') {
+                    String line = lineBuffer.toString().trim();
+                    if (!line.isEmpty()) {
+                        resp.append(line).append("\n");
+                        log.debug("📥 modem resp: {}", line);
+                    }
+                    lineBuffer.setLength(0);
+                } else {
+                    lineBuffer.append(c);
+                }
+            }
+        }
+        return resp.toString();
+    }
+
 
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
