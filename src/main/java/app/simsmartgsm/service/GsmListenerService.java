@@ -67,8 +67,21 @@ public class GsmListenerService {
 
                         log.info("📤 [INIT TEST] Sending SMS from {} -> {}: [{}]",
                                 senderPort, sim.getPhoneNumber(), msg);
-                        SimpleGsmClient simpleSmsService = new SimpleGsmClient("COM77");
-                        boolean ok = simpleSmsService.sendSms(sim.getPhoneNumber(), msg);
+
+                        boolean ok = portManager.withPort(senderPort, helper -> {
+                            try {
+                                // dùng sendTextSms thay vì sendSms
+                                return helper.sendTextSms(
+                                        sim.getPhoneNumber(),
+                                        msg,
+                                        Duration.ofSeconds(30)
+                                );
+                            } catch (Exception e) {
+                                log.error("❌ Error sending OTP on {}: {}", senderPort, e.getMessage());
+                                return false;
+                            }
+                        }, 10000L);
+
                         if (ok) {
                             log.info("📤 [INIT TEST] Result: ✅ Sent successfully");
                         } else {
