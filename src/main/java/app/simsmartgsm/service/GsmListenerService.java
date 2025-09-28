@@ -116,9 +116,18 @@ public class GsmListenerService {
                             // cấu hình modem 1 lần khi mở port
                             helper.sendAndRead("AT+CMGF=1", 2000);
                             helper.sendAndRead("AT+CNMI=2,1,0,0,0", 2000);
+                            helper.sendAndRead("AT+CPMS=\"SM\",\"SM\",\"SM\"", 2000);
 
                             // Đọc inbox (có thể thay bằng AT+CMGL="REC UNREAD")
-                            String resp = helper.sendAndRead("AT+CMGL=\"REC UNREAD\"", 5000);
+                            String resp = helper.sendAndRead("AT+CMGL=\"ALL\"", 5000);
+                            int index = extractSmsIndex(resp);
+                            if (index > 0) {
+                                String smsResp = helper.sendAndRead("AT+CMGR=" + index, 5000);
+                                processSmsResponse(sim, smsResp);
+
+                                // xoá tin sau khi xử lý
+                                helper.sendAndRead("AT+CMGD=" + index, 2000);
+                            }
 
                             if (resp != null && !resp.isBlank()) {
                                 log.debug("📥 Raw SMS buffer ({}):\n{}", sim.getComName(), resp);
