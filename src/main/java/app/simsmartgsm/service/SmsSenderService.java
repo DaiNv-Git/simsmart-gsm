@@ -1,63 +1,24 @@
 package app.simsmartgsm.service;
 
 import app.simsmartgsm.entity.SmsMessage;
-import app.simsmartgsm.repository.SmsMessageRepository;
 import com.fazecast.jSerialComm.SerialPort;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Scanner;
+
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class SmsSenderService {
 
-    private final SmsMessageRepository smsRepo;
     private static final int MAX_RETRY = 3;
 
-    private String getDeviceName() {
-        try {
-            return InetAddress.getLocalHost().getHostName();
-        } catch (Exception e) {
-            return "unknown-device";
-        }
-    }
-
-    private SerialPort openPort(String portName) {
-        SerialPort port = SerialPort.getCommPort(portName);
-        port.setBaudRate(115200);
-        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
-        if (!port.openPort()) throw new RuntimeException("❌ Không thể mở cổng " + portName);
-        return port;
-    }
-
-    private void sendCmd(OutputStream out, String cmd) throws Exception {
-        log.debug("➡️ {}", cmd);
-        out.write((cmd + "\r").getBytes(StandardCharsets.US_ASCII));
-        out.flush();
-        Thread.sleep(200);
-    }
-
-    private String getSimPhoneNumber(OutputStream out, Scanner sc) throws Exception {
-        sendCmd(out, "AT+CNUM");
-        long start = System.currentTimeMillis();
-        while (System.currentTimeMillis() - start < 2000 && sc.hasNextLine()) {
-            String line = sc.nextLine().trim();
-            if (line.contains("+CNUM")) {
-                String[] parts = line.split(",");
-                if (parts.length >= 2) {
-                    return parts[1].replace("\"", "").trim();
-                }
-            }
-        }
-        return "unknown";
+    public boolean sendSms(String comPort, String toNumber, String message) {
+        return "OK".equals(sendOne(comPort, toNumber, message).getType());
     }
 
     public SmsMessage sendOne(String portName, String phoneNumber, String text) {
@@ -73,13 +34,17 @@ public class SmsSenderService {
                 try (OutputStream out = port.getOutputStream();
                      InputStream in = port.getInputStream()) {
 
+                    Scanner sc = new Scanner(in, StandardCharsets.US_ASCII);
+
                     // ==== Lấy số SIM gửi ====
-                    fromPhone = getSimPhoneNumber(out, new Scanner(in, StandardCharsets.US_ASCII));
+                    fromPhone = getSimPhoneNumber(out, sc);
 
                     // ==== Cấu hình cơ bản ====
                     sendCmd(out, "AT+CMGF=1");          // text mode
                     sendCmd(out, "AT+CSCS=\"GSM\"");    // charset
-                    sendCmd(out, "AT+CSCA?");           // check SMSC
+                    sendCmd(out, "AT+CSCA?");           // SMSC
+                    sendCmd(out, "AT+CSMP=49,167,0,0"); // enable delivery report
+                    sendCmd(out, "AT+CNMI=2,1,0,1,0");  // push delivery report to TE
 
                     // ==== Bắt đầu gửi SMS ====
                     sendCmd(out, "AT+CMGS=\"" + phoneNumber + "\"");
@@ -100,6 +65,7 @@ public class SmsSenderService {
                     if (!gotPrompt) {
                         log.warn("❌ Không nhận được dấu '>' từ modem {}", portName);
                         status = "FAIL";
+                        Thread.sleep((long) Math.pow(2, attempt) * 1000); // backoff
                         continue;
                     }
 
@@ -125,10 +91,16 @@ public class SmsSenderService {
                                     log.debug("[{}] modem resp: {}", portName, line);
 
                                     if (line.contains("+CMGS")) {
-                                        status = "OK";
+                                        status = "SENT"; // modem chấp nhận
                                     }
-                                    if (line.equals("OK") && "OK".equals(status)) {
+                                    if (line.contains("+CDS:")) {
+                                        log.info("📩 Delivery report nhận từ modem {}: {}", portName, line);
+                                        status = "OK"; // xác nhận SMSC đã deliver
                                         break;
+                                    }
+                                    if (line.equals("OK") && "SENT".equals(status)) {
+                                        // chưa có CDS nhưng modem đã gửi đi
+                                        log.info("✅ Modem {} báo đã gửi SMS (chưa có Delivery Report)", portName);
                                     }
                                     if (line.contains("ERROR") || line.contains("+CMS ERROR") || line.contains("+CME ERROR")) {
                                         status = "FAIL";
@@ -148,50 +120,55 @@ public class SmsSenderService {
                 if (port != null && port.isOpen()) port.closePort();
             }
 
-            if ("OK".equals(status)) break;
+            if ("OK".equals(status)) break; // success
             try {
-                Thread.sleep(1000);
+                Thread.sleep((long) Math.pow(2, attempt) * 1000); // exponential backoff
             } catch (InterruptedException ignored) {}
         }
 
-        // ==== Build kết quả ====
-        SmsMessage saved = SmsMessage.builder()
-                .deviceName(getDeviceName())
+        SmsMessage msg = SmsMessage.builder()
                 .fromPort(portName)
                 .fromPhone(fromPhone)
                 .toPhone(phoneNumber)
                 .message(text)
-                .type("OK".equals(status) ? "OUTBOUND" : "OUTBOUND_FAIL")
-                .modemResponse(resp.toString().trim())
+                .modemResponse(resp.toString())
+                .type(status)              // OK / SENT / FAIL
                 .timestamp(Instant.now())
                 .build();
 
-        return smsRepo.save(saved);
+        return msg;
     }
 
-    // === Gửi nhiều số cùng 1 nội dung ===
-    public List<SmsMessage> sendBulk(List<String> phones, String text, String portName) {
-        ExecutorService exec = Executors.newFixedThreadPool(phones.size());
-        List<Future<SmsMessage>> futures = new ArrayList<>();
-        List<SmsMessage> results = new ArrayList<>();
+    private SerialPort openPort(String portName) {
+        SerialPort port = SerialPort.getCommPort(portName);
+        port.setBaudRate(115200);
+        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 2000, 2000);
+        if (!port.openPort()) throw new RuntimeException("Không mở được port " + portName);
+        return port;
+    }
 
-        for (String phone : phones) {
-            futures.add(exec.submit(() -> sendOne(portName, phone, text)));
-        }
+    private void sendCmd(OutputStream out, String cmd) throws Exception {
+        String fullCmd = cmd + "\r";
+        out.write(fullCmd.getBytes(StandardCharsets.US_ASCII));
+        out.flush();
+        log.debug("➡️ CMD: {}", cmd);
+        Thread.sleep(200); // small delay tránh modem bị nghẽn
+    }
 
-        for (Future<SmsMessage> f : futures) {
-            try {
-                results.add(f.get());
-            } catch (Exception e) {
-                log.error("❌ Lỗi bulk send: {}", e.getMessage());
+    private String getSimPhoneNumber(OutputStream out, Scanner sc) throws Exception {
+        sendCmd(out, "AT+CNUM");
+        long start = System.currentTimeMillis();
+        while (System.currentTimeMillis() - start < 2000) {
+            if (sc.hasNextLine()) {
+                String line = sc.nextLine();
+                if (line.contains("+CNUM")) {
+                    String[] parts = line.split(",");
+                    if (parts.length > 1) {
+                        return parts[1].replaceAll("\"", "").trim();
+                    }
+                }
             }
         }
-        exec.shutdown();
-        return results;
-    }
-
-    // === Shortcut: gửi 1 SMS không lưu DB (cho test nhanh) ===
-    public boolean sendSms(String comName, String phoneNumber, String message) {
-        return "OK".equals(sendOne(comName, phoneNumber, message).getType());
+        return "unknown";
     }
 }
