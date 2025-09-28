@@ -89,7 +89,7 @@ public class GsmListenerService {
     }
 
     // === Xử lý SMS nhận về từ PortWorker ===
-    protected void processSms(Sim sim, AtCommandHelper.SmsRecord rec) {
+    public void processSms(Sim sim, AtCommandHelper.SmsRecord rec) {
         List<RentSession> sessions = activeSessions.getOrDefault(sim.getId(), List.of());
         if (sessions.isEmpty()) return;
 
