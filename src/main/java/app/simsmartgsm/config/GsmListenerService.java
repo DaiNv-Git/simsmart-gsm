@@ -4,12 +4,13 @@ import app.simsmartgsm.uitils.PortWorker;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-@Service
+@Component("gsmListenerServiceConfig")
 @RequiredArgsConstructor
 @Slf4j
 public class GsmListenerService {
