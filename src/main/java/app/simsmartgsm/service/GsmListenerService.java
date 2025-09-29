@@ -178,13 +178,13 @@ public class GsmListenerService {
             log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
         }
         // 3. Nếu type = rent.otp.service → đóng session ngay
-        if (s.getType() == OtpSessionType.BUY) {
-            log.info("💾 Delete sessions", sms.getOrderId(), sms.getSimPhone());
-            activeSessions.computeIfPresent(sim.getId(), (k, list) -> {
-                list.remove(s);
-                return list;
-            });
-        }
+//        if (s.getType() == OtpSessionType.BUY) {
+//            log.info("💾 Delete sessions", sms.getOrderId(), sms.getSimPhone());
+//            activeSessions.computeIfPresent(sim.getId(), (k, list) -> {
+//                list.remove(s);
+//                return list;
+//            });
+//        }
     }
 
     // === Utils ===
