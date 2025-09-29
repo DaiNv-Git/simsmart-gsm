@@ -72,7 +72,7 @@ public class GsmListenerService {
     // === Tạo worker cho SIM ===
     private void startWorkerForSim(Sim sim) {
         workers.computeIfAbsent(sim.getComName(), com -> {
-            PortWorker worker = new PortWorker(sim.getComName(), 7000, this);
+            PortWorker worker = new PortWorker(sim, 7000, this);
             new Thread(worker, "PortWorker-" + com).start();
             return worker;
         });

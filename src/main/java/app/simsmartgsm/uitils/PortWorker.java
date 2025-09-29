@@ -79,6 +79,7 @@ public class PortWorker implements Runnable {
     }
 
     /** Đảm bảo port mở, nếu chưa thì mở lại */
+    /** Đảm bảo port mở, nếu chưa thì mở lại */
     private boolean ensurePort() {
         try {
             if (port != null && port.isOpen()) return true;
@@ -97,6 +98,8 @@ public class PortWorker implements Runnable {
             helper = new AtCommandHelper(port);
             helper.setTextMode(true);
             helper.setCharset("GSM");
+            helper.setNewMessageIndicationDefault(); // ✅ thêm dòng này để modem báo SMS mới
+
             log.info("✅ Opened port {}", sim.getComName());
             return true;
 
@@ -106,6 +109,7 @@ public class PortWorker implements Runnable {
             return false;
         }
     }
+
 
     /** Đóng port */
     private void closePort() {
