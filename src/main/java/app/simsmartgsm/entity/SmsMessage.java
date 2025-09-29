@@ -50,7 +50,7 @@ public class SmsMessage {
     /** Loại tin nhắn: INBOX / OUTBOX / OTP... */
     private String type;
     
-    private String customerId;
+    private Long accountId;
 
     /** Thời điểm lưu SMS */
     private Instant timestamp;
