@@ -104,13 +104,13 @@ public class GsmListenerService {
         String otp = extractOtp(rec.body);
         if (otp == null) return;
 
-        // lấy prefix 4 ký tự đầu tiên từ SMS
         String prefix = smsNorm.length() >= 4 ? smsNorm.substring(0, 4) : smsNorm;
         log.info("🔎 SMS prefix = {}", prefix);
 
         boolean matched = false;
+        List<RentSession> snapshot = new ArrayList<>(sessions);
 
-        for (RentSession s : sessions) {
+        for (RentSession s : snapshot) {
             if (!s.isActive()) continue;
 
             for (String service : s.getServices()) {
@@ -135,8 +135,10 @@ public class GsmListenerService {
                 forwardToSocket(sim, first, service, rec, otp);
             }
         }
-
-        sessions.removeIf(s -> !s.isActive());
+        activeSessions.computeIfPresent(sim.getId(), (k, list) -> {
+            list.removeIf(s -> !s.isActive());
+            return list;
+        });
     }
 
 
