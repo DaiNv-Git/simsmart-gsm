@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
@@ -30,9 +31,7 @@ public class PortWorker implements Runnable {
 
     public void stop() {
         running = false;
-        closePort();
     }
-
     /** Đẩy task gửi SMS vào queue */
     public void sendSms(String to, String content) {
         queue.offer(new Task(TaskType.SEND, to, content));
@@ -45,40 +44,52 @@ public class PortWorker implements Runnable {
 
     @Override
     public void run() {
-        log.info("▶️ Starting PortWorker for {}", sim.getComName());
+        log.info("▶️ Start worker for SIM {} (COM={})", sim.getPhoneNumber(), sim.getComName());
+        try (AtCommandHelper helper = AtCommandHelper.open(
+                sim.getComName(), 115200, 4000, 2000)) {
 
-        while (running) {
-            try {
-                if (!ensurePort()) {
-                    Thread.sleep(2000);
-                    continue;
-                }
+            helper.echoOff();
+            helper.setTextMode(true);
+            helper.setNewMessageIndicationDefault();
 
-                // Ưu tiên task từ queue
-                Task task = queue.poll();
-                if (task != null) {
-                    if (task.type == TaskType.SEND) {
-                        doSendSms(task.to, task.content);
-                    } else if (task.type == TaskType.SCAN) {
-                        doScanSms();
+            while (running) {
+                try {
+                    // 1. Lấy SMS chưa đọc
+                    List<AtCommandHelper.SmsRecord> unread = helper.listUnreadSmsText(1000);
+
+                    for (AtCommandHelper.SmsRecord rec : unread) {
+                        log.info("📩 New SMS on {}: {}", sim.getComName(), rec);
+
+                        // 2. Gửi về GsmListenerService xử lý
+                        listenerService.processSms(sim, rec);
+
+                        // 3. Xoá SMS để không đọc lại
+                        try {
+                            boolean deleted = helper.deleteSms(rec.index);
+                            if (deleted) {
+                                log.info("🗑 Deleted SMS index {} on {}", rec.index, sim.getComName());
+                            } else {
+                                log.warn("⚠️ Failed to delete SMS index {} on {}", rec.index, sim.getComName());
+                            }
+                        } catch (Exception e) {
+                            log.warn("⚠️ Error deleting SMS index {}: {}", rec.index, e.getMessage());
+                        }
                     }
-                } else {
-                    // Không có task → scan định kỳ
-                    doScanSms();
+
+                    // 4. Nghỉ theo chu kỳ scan
                     Thread.sleep(scanIntervalMs);
+
+                } catch (Exception e) {
+                    log.error("❌ Error scanning SIM {}: {}", sim.getComName(), e.getMessage(), e);
+                    Thread.sleep(2000); // nghỉ 2s rồi thử lại
                 }
-
-            } catch (Exception e) {
-                log.error("❌ Worker error {}: {}", sim.getComName(), e.getMessage(), e);
-                closePort();
-                safeSleep(2000);
             }
+        } catch (Exception e) {
+            log.error("❌ Cannot init PortWorker for {}: {}", sim.getComName(), e.getMessage(), e);
+        } finally {
+            log.info("⏹ Worker stopped for SIM {} (COM={})", sim.getPhoneNumber(), sim.getComName());
         }
-
-        closePort();
-        log.info("⏹️ PortWorker for {} stopped", sim.getComName());
     }
-
     /** Đảm bảo port mở, nếu chưa thì mở lại */
     /** Đảm bảo port mở, nếu chưa thì mở lại */
     private boolean ensurePort() {
