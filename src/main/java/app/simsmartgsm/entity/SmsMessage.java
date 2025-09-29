@@ -31,6 +31,9 @@ public class SmsMessage {
     /** Số điện thoại SIM gắn trên modem */
     private String simPhone;
 
+    /** Số điện thoại SIM gắn trên modem */
+    private String serviceCode;
+
     /** Số gửi (Sender / From) */
     private String fromNumber;
 

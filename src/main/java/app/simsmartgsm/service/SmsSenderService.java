@@ -29,14 +29,12 @@ public class SmsSenderService {
         return "OK".equals(result.getType()) || "SENT".equals(result.getType());
     }
 
-
     /**
      * Gửi 1 SMS, trả về SmsMessage chứa thông tin modem response.
      */
     public SmsMessage sendOne(String portName, String phoneNumber, String text) {
         String status = "FAIL";
         StringBuilder resp = new StringBuilder();
-        String fromPhone = "unknown";
 
         for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
             SerialPort port = null;
@@ -95,17 +93,18 @@ public class SmsSenderService {
         }
 
         return SmsMessage.builder()
-                .fromPort(portName)
-                .fromPhone(fromPhone)
-                .toPhone(phoneNumber)
-                .message(text)
-                .modemResponse(resp.toString())
-                .type(status)
+                .comPort(portName)               // cổng COM
+                .simPhone(null)                  // chưa có số SIM, có thể lấy từ Sim entity nếu cần
+                .serviceCode(null)               // serviceCode không xác định khi gửi đi
+                .fromNumber("SYSTEM")            // gán mặc định SYSTEM hoặc simPhone nếu biết
+                .toNumber(phoneNumber)           // số nhận
+                .content(text)                   // nội dung gửi
+                .modemResponse(resp.toString())  // raw response từ modem
+                .type(status)                    // OK / SENT / FAIL
                 .timestamp(Instant.now())
                 .build();
     }
 
-    // --- Helper methods ---
     private SerialPort openPort(String portName) {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(115200);

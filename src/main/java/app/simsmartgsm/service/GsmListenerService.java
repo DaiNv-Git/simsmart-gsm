@@ -4,6 +4,7 @@ import app.simsmartgsm.config.RemoteStompClientConfig;
 import app.simsmartgsm.entity.Country;
 import app.simsmartgsm.entity.Sim;
 import app.simsmartgsm.entity.SmsMessage;
+import app.simsmartgsm.repository.ServiceRepository;
 import app.simsmartgsm.repository.SmsMessageRepository;
 import app.simsmartgsm.uitils.AtCommandHelper;
 import app.simsmartgsm.uitils.OtpSessionType;
@@ -30,7 +31,7 @@ public class GsmListenerService {
 
     private final RemoteStompClientConfig remoteStompClientConfig;
     private final SmsMessageRepository smsMessageRepository;
-
+    private final ServiceRepository serviceRepository;
     /** Map quản lý worker cho từng SIM (COM port) */
     private final Map<String, PortWorker> workers = new ConcurrentHashMap<>();
 
@@ -144,13 +145,16 @@ public class GsmListenerService {
     }
 
     private void handleOtpReceived(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
-        // 1. Save DB
+        String resolvedServiceCode = serviceRepository.findByCode(service)
+                .map(svc -> svc.getCode())
+                .orElse(service);
         SmsMessage sms = SmsMessage.builder()
                 .orderId(s.getOrderId())
                 .durationMinutes(s.getDurationMinutes())
                 .deviceName(sim.getDeviceName())
                 .comPort(sim.getComName())
                 .simPhone(sim.getPhoneNumber())
+                .serviceCode(resolvedServiceCode)
                 .fromNumber(rec.sender)
                 .toNumber(sim.getPhoneNumber())
                 .content(rec.body)
@@ -158,17 +162,20 @@ public class GsmListenerService {
                 .type("INBOX")
                 .timestamp(Instant.now())
                 .build();
+
         smsMessageRepository.save(sms);
 
         log.info("💾 Saved SMS to DB orderId={} simPhone={} otp={} duration={}m",
                 sms.getOrderId(), sms.getSimPhone(), otp, sms.getDurationMinutes());
+
+        smsMessageRepository.save(sms);
 
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
         wsMessage.put("comNumber", sim.getComName());
         wsMessage.put("customerId", s.getAccountId());
-        wsMessage.put("serviceCode", service);
+        wsMessage.put("serviceCode", resolvedServiceCode);
         wsMessage.put("countryName", s.getCountry().getCountryCode());
         wsMessage.put("smsContent", rec.body);
         wsMessage.put("fromNumber", rec.sender);
