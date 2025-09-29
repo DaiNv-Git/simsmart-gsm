@@ -3,7 +3,10 @@ package app.simsmartgsm.service;
 import app.simsmartgsm.config.RemoteStompClientConfig;
 import app.simsmartgsm.entity.Country;
 import app.simsmartgsm.entity.Sim;
+import app.simsmartgsm.entity.SmsMessage;
+import app.simsmartgsm.repository.SmsMessageRepository;
 import app.simsmartgsm.uitils.AtCommandHelper;
+import app.simsmartgsm.uitils.OtpSessionType;
 import app.simsmartgsm.uitils.PortWorker;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -26,6 +29,7 @@ import java.util.regex.Pattern;
 public class GsmListenerService {
 
     private final RemoteStompClientConfig remoteStompClientConfig;
+    private final SmsMessageRepository smsMessageRepository;
 
     /** Map quản lý worker cho từng SIM (COM port) */
     private final Map<String, PortWorker> workers = new ConcurrentHashMap<>();
@@ -37,8 +41,9 @@ public class GsmListenerService {
 
     // === Thuê SIM ===
     public void rentSim(Sim sim, Long accountId, List<String> services,
-                        int durationMinutes, Country country) {
-        RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes, country);
+                        int durationMinutes, Country country,String orderId,String type) {
+        RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes,
+                country,orderId,OtpSessionType.fromString(type));
         activeSessions.computeIfAbsent(sim.getId(), k -> new ArrayList<>()).add(session);
 
         log.info("➕ Rent SIM {} by acc={} services={} duration={}m",
@@ -135,6 +140,29 @@ public class GsmListenerService {
 
     // === Forward OTP lên broker ===
     private void forwardToSocket(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
+        handleOtpReceived(sim, s, service, rec, otp);
+    }
+
+    private void handleOtpReceived(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
+        // 1. Save DB
+        SmsMessage sms = SmsMessage.builder()
+                .orderId(s.getOrderId())
+                .durationMinutes(s.getDurationMinutes())
+                .deviceName(sim.getDeviceName())
+                .comPort(sim.getComName())
+                .simPhone(sim.getPhoneNumber())
+                .fromNumber(rec.sender)
+                .toNumber(sim.getPhoneNumber())
+                .content(rec.body)
+                .modemResponse("OK")
+                .type("INBOX")
+                .timestamp(Instant.now())
+                .build();
+        smsMessageRepository.save(sms);
+
+        log.info("💾 Saved SMS to DB orderId={} simPhone={} otp={} duration={}m",
+                sms.getOrderId(), sms.getSimPhone(), otp, sms.getDurationMinutes());
+
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
@@ -153,6 +181,16 @@ public class GsmListenerService {
         } else {
             log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
         }
+        // 3. Nếu type = rent.otp.service → đóng session ngay
+        // 3. Nếu type = RENT → đóng session ngay
+        if (s.getType() == OtpSessionType.RENT) {
+            log.info("⏹️ Closing rent session for orderId={} after first OTP", s.getOrderId());
+            activeSessions.computeIfPresent(sim.getId(), (k, list) -> {
+                list.remove(s);
+                return list;
+            });
+        }
+
     }
 
     // === Utils ===
@@ -178,7 +216,8 @@ public class GsmListenerService {
         private Instant startTime;
         private int durationMinutes;
         private Country country;
-
+        private String orderId;
+        private OtpSessionType type;
         boolean isActive() {
             return Instant.now().isBefore(startTime.plus(Duration.ofMinutes(durationMinutes)));
         }

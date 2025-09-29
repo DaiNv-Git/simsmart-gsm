@@ -19,6 +19,9 @@ public class RentSimRequest {
     @JsonProperty("comNumber")
     private String sim;
 
+    @JsonProperty("type")
+    private String type;
+
     @JsonProperty("customerId")
     private Long accountId;
     @JsonProperty("phoneNumber")
@@ -34,6 +37,9 @@ public class RentSimRequest {
     private String countryCode;
 
     private String deviceName;
+
+    @JsonProperty("orderId")
+    private String orderId;
 
     // ✅ Helper method để lấy List<String>
     public List<String> getServiceCodeList() {

@@ -105,7 +105,16 @@ public class RemoteSubscriberConfig {
                     RentSimRequest req = mapper.readValue(json, RentSimRequest.class);
                     log.info("✅ Parsed RentSimRequest: {}", req);
 
-                    // TODO: xử lý luồng tiếp theo, ví dụ gọi gsmListenerService.rentSim(...)
+                    // 🔎 Lấy tên host hiện tại
+                    String localHostName = java.net.InetAddress.getLocalHost().getHostName();
+
+                    // ✅ Chỉ xử lý nếu deviceName khớp với host
+                    if (!localHostName.equalsIgnoreCase(req.getDeviceName())) {
+                        log.info("⏭️ Bỏ qua request vì deviceName={} không khớp với host={}",
+                                req.getDeviceName(), localHostName);
+                        return;
+                    }
+
                     Sim sim = simRepository.findByPhoneNumber(req.getPhoneNumber())
                             .orElseThrow(() -> new RuntimeException("SIM not found: " + req.getPhoneNumber()));
 
@@ -117,7 +126,8 @@ public class RemoteSubscriberConfig {
                             req.getAccountId(),
                             req.getServiceCodeList(),
                             req.getRentDuration(),
-                            country
+                            country,req.getOrderId(),
+                            req.getType()
                     );
 
                 } catch (Exception e) {

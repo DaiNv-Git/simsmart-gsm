@@ -15,12 +15,37 @@ import java.time.Instant;
 public class SmsMessage {
     @Id
     private String id;
+
+    /** Liên kết với Order thuê SIM */
+    private String orderId;
+
+    /** Thời gian thuê (minutes) */
+    private int durationMinutes;
+
+    /** Tên device chạy service (hostname / deviceName) */
     private String deviceName;
-    private String fromPort;
-    private String fromPhone;
-    private String toPhone;
-    private String message;
+
+    /** COM port modem (vd: COM76) */
+    private String comPort;
+
+    /** Số điện thoại SIM gắn trên modem */
+    private String simPhone;
+
+    /** Số gửi (Sender / From) */
+    private String fromNumber;
+
+    /** Số nhận (Receiver / To) */
+    private String toNumber;
+
+    /** Nội dung SMS */
+    private String content;
+
+    /** Trả về từ modem (OK/ERROR/...) */
     private String modemResponse;
+
+    /** Loại tin nhắn: INBOX / OUTBOX / OTP... */
     private String type;
+
+    /** Thời điểm lưu SMS */
     private Instant timestamp;
 }
