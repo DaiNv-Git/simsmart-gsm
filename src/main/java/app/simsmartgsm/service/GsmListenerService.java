@@ -97,30 +97,23 @@ public class GsmListenerService {
 
     // === Xử lý SMS nhận về từ PortWorker ===
     public void processSms(Sim sim, AtCommandHelper.SmsRecord rec) {
-        List<RentSession> sessions = activeSessions.getOrDefault(sim.getId(), List.of());
+        List<RentSession> sessions = new ArrayList<>(activeSessions.getOrDefault(sim.getId(), List.of()));
         if (sessions.isEmpty()) return;
 
         String smsNorm = normalize(rec.body);
         String otp = extractOtp(rec.body);
         if (otp == null) return;
 
-        String prefix = smsNorm.length() >= 4 ? smsNorm.substring(0, 4) : smsNorm;
-        log.info("🔎 SMS prefix = {}", prefix);
-
         boolean matched = false;
-        List<RentSession> snapshot = new ArrayList<>(sessions);
 
-        for (RentSession s : snapshot) {
+        for (RentSession s : sessions) {
             if (!s.isActive()) continue;
 
             for (String service : s.getServices()) {
                 String serviceNorm = normalize(service);
                 String servicePrefix = serviceNorm.substring(0, Math.min(4, serviceNorm.length()));
 
-                log.info("🔎 Compare prefix={} with servicePrefix={}", prefix, servicePrefix);
-
-                if (prefix.equals(servicePrefix)) {
-                    log.info("✅ Matched service={} for acc={}", service, s.getAccountId());
+                if (smsNorm.startsWith(servicePrefix)) {
                     forwardToSocket(sim, s, service, rec, otp);
                     matched = true;
                 }
@@ -130,15 +123,9 @@ public class GsmListenerService {
         if (!matched) {
             RentSession first = sessions.stream().filter(RentSession::isActive).findFirst().orElse(null);
             if (first != null) {
-                String service = first.getServices().isEmpty() ? "UNKNOWN" : first.getServices().get(0);
-                log.info("↪️ Fallback forward with service={}", service);
-                forwardToSocket(sim, first, service, rec, otp);
+                forwardToSocket(sim, first, first.getServices().isEmpty() ? "UNKNOWN" : first.getServices().get(0), rec, otp);
             }
         }
-        activeSessions.computeIfPresent(sim.getId(), (k, list) -> {
-            list.removeIf(s -> !s.isActive());
-            return list;
-        });
     }
 
 
@@ -192,15 +179,12 @@ public class GsmListenerService {
             log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
         }
         // 3. Nếu type = rent.otp.service → đóng session ngay
-        // 3. Nếu type = RENT → đóng session ngay
-        if (s.getType() == OtpSessionType.RENT) {
-            log.info("⏹️ Closing rent session for orderId={} after first OTP", s.getOrderId());
+        if (s.getType() == OtpSessionType.BUY) {
             activeSessions.computeIfPresent(sim.getId(), (k, list) -> {
                 list.remove(s);
                 return list;
             });
         }
-
     }
 
     // === Utils ===
