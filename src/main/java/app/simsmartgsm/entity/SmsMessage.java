@@ -1,5 +1,6 @@
 package app.simsmartgsm.entity;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.*;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
@@ -48,6 +49,8 @@ public class SmsMessage {
 
     /** Loại tin nhắn: INBOX / OUTBOX / OTP... */
     private String type;
+    
+    private String customerId;
 
     /** Thời điểm lưu SMS */
     private Instant timestamp;

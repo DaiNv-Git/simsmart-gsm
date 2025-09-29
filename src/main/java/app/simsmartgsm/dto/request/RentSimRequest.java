@@ -23,7 +23,8 @@ public class RentSimRequest {
     private String type;
 
     @JsonProperty("customerId")
-    private Long accountId;
+    private String customerId;
+    
     @JsonProperty("phoneNumber")
     private String phoneNumber;
 
@@ -41,6 +42,7 @@ public class RentSimRequest {
     @JsonProperty("orderId")
     private String orderId;
 
+    
     // ✅ Helper method để lấy List<String>
     public List<String> getServiceCodeList() {
         if (serviceCodeCsv == null || serviceCodeCsv.isBlank()) {

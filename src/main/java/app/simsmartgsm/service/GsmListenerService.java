@@ -42,7 +42,7 @@ public class GsmListenerService {
     private final boolean testMode = true;
 
     // === Thuê SIM ===
-    public void rentSim(Sim sim, Long accountId, List<String> services,
+    public void rentSim(Sim sim, String accountId, List<String> services,
                         int durationMinutes, Country country,String orderId,String type) {
         RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes,
                 country,orderId,OtpSessionType.fromString(type));
@@ -140,6 +140,7 @@ public class GsmListenerService {
                 .orElse(service);
         SmsMessage sms = SmsMessage.builder()
                 .orderId(s.getOrderId())
+                .customerId(s.getAccountId()) // 👈 thêm dòng này
                 .durationMinutes(s.getDurationMinutes())
                 .deviceName(sim.getDeviceName())
                 .comPort(sim.getComName())
@@ -152,6 +153,7 @@ public class GsmListenerService {
                 .type("INBOX")
                 .timestamp(Instant.now())
                 .build();
+
 
         smsMessageRepository.save(sms);
 
@@ -204,7 +206,7 @@ public class GsmListenerService {
     @Data
     @AllArgsConstructor
     static class RentSession {
-        private Long accountId;
+        private String accountId;
         private List<String> services;
         private Instant startTime;
         private int durationMinutes;
