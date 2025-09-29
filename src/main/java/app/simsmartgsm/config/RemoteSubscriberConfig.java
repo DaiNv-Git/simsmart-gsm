@@ -123,7 +123,7 @@ public class RemoteSubscriberConfig {
 
                     gsmListenerService.rentSim(
                             sim,
-                            req.getCustomerId(),
+                            req.getAccountId(),
                             req.getServiceCodeList(),
                             req.getRentDuration(),
                             country,req.getOrderId(),

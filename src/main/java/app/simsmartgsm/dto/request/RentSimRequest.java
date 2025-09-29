@@ -22,8 +22,8 @@ public class RentSimRequest {
     @JsonProperty("type")
     private String type;
 
-    @JsonProperty("customerId")
-    private String customerId;
+    @JsonProperty("accountId")
+    private Long accountId;
     
     @JsonProperty("phoneNumber")
     private String phoneNumber;
