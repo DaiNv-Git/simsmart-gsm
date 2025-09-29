@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -45,7 +46,7 @@ public class GsmListenerService {
                         int durationMinutes, Country country,String orderId,String type) {
         RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes,
                 country,orderId,OtpSessionType.fromString(type));
-        activeSessions.computeIfAbsent(sim.getId(), k -> new ArrayList<>()).add(session);
+        activeSessions.computeIfAbsent(sim.getId(), k -> new CopyOnWriteArrayList<>()).add(session);
 
         log.info("➕ Rent SIM {} by acc={} services={} duration={}m",
                 sim.getPhoneNumber(), accountId, services, durationMinutes);
