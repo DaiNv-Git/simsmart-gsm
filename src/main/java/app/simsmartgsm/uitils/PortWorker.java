@@ -124,11 +124,15 @@ public class PortWorker implements Runnable {
         try {
             boolean ok = helper.sendTextSms(to, content, Duration.ofSeconds(30));
             log.info("📤 SEND result on {} -> {} : {}", sim.getComName(), to, ok ? "✅ OK" : "❌ FAIL");
+
+            forceScan();
+
         } catch (Exception e) {
             log.error("❌ SEND error on {}: {}", sim.getComName(), e.getMessage());
             closePort();
         }
     }
+
 
     /** Quét SMS mới */
     private void doScanSms() {
