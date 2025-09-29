@@ -79,7 +79,7 @@ public class GsmListenerService {
     // === Tạo worker cho SIM ===
     private void startWorkerForSim(Sim sim) {
         workers.computeIfAbsent(sim.getComName(), com -> {
-            PortWorker worker = new PortWorker(sim, 7000, this);
+            PortWorker worker = new PortWorker(sim, 5000, this);
             new Thread(worker, "PortWorker-" + com).start();
             return worker;
         });
@@ -158,7 +158,6 @@ public class GsmListenerService {
         log.info("💾 Saved SMS to DB orderId={} simPhone={} otp={} duration={}m",
                 sms.getOrderId(), sms.getSimPhone(), otp, sms.getDurationMinutes());
 
-        smsMessageRepository.save(sms);
 
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
@@ -180,6 +179,7 @@ public class GsmListenerService {
         }
         // 3. Nếu type = rent.otp.service → đóng session ngay
         if (s.getType() == OtpSessionType.BUY) {
+            log.info("💾 Delete sessions", sms.getOrderId(), sms.getSimPhone());
             activeSessions.computeIfPresent(sim.getId(), (k, list) -> {
                 list.remove(s);
                 return list;
