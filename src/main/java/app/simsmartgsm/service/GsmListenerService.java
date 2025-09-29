@@ -177,7 +177,7 @@ public class GsmListenerService {
         } else {
             log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
         }
-        // 3. Nếu type = rent.otp.service → đóng session ngay
+        // 3. Nếu type = buy.otp.service → đóng session ngay
 //        if (s.getType() == OtpSessionType.BUY) {
 //            log.info("💾 Delete sessions", sms.getOrderId(), sms.getSimPhone());
 //            activeSessions.computeIfPresent(sim.getId(), (k, list) -> {
@@ -194,8 +194,7 @@ public class GsmListenerService {
 
     private String extractOtp(String content) {
         Matcher m = Pattern.compile("\\b\\d{4,8}\\b").matcher(content);
-        return m.find() ? m.group() : null;
-    }
+        return m.find() ? m.group() : null;    }
 
     private String generateOtp() {
         return String.valueOf(ThreadLocalRandom.current().nextInt(100000, 999999));
