@@ -76,7 +76,7 @@ public class GsmListenerService {
         }
     }
 
-    // === Tạo worker cho SIM ===
+    // === Tạo worker cho SIM ===Forward
     private void startWorkerForSim(Sim sim) {
         workers.computeIfAbsent(sim.getComName(), com -> {
             PortWorker worker = new PortWorker(sim, 5000, this);

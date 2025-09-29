@@ -176,9 +176,20 @@ public class AtCommandHelper implements Closeable {
         writeCtrlZ();
 
         // Step 3: final response
-        String finalResp = readUntilMarkers((int) Math.max(4000, totalTimeout.toMillis()), "OK", "ERROR", "+CMGS");
-        return finalResp.contains("OK") || finalResp.contains("+CMGS");
+        String finalResp = readUntilMarkers((int) Math.max(4000, totalTimeout.toMillis()),
+                "OK", "ERROR", "+CMGS");
+
+        boolean ok = finalResp.contains("OK") || finalResp.contains("+CMGS");
+        log.warn("⚠Send success message : {}");
+        try {
+            setNewMessageIndicationDefault();
+        } catch (Exception e) {
+            log.warn("⚠️ Failed to re-enable CNMI after send: {}", e.getMessage());
+        }
+
+        return ok;
     }
+
     /** Xoá 1 SMS theo index trong bộ nhớ hiện tại (SM/ME). */
     public boolean deleteSms(int index) throws IOException, InterruptedException {
         // Một số modem chấp nhận "AT+CMGD=<idx>", số khác cần "AT+CMGD=<idx>,0".
