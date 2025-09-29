@@ -51,9 +51,11 @@ public class PortWorker implements Runnable {
             helper.echoOff();
             helper.setTextMode(true);
             helper.setNewMessageIndicationDefault();
+            log.info("🔄 Worker loop started for {}", sim.getComName());
 
             while (running) {
                 try {
+                    log.debug("🔍 Scanning for unread SMS on {}", sim.getComName());
                     // 1. Lấy SMS chưa đọc
                     List<AtCommandHelper.SmsRecord> unread = helper.listUnreadSmsText(1000);
 
