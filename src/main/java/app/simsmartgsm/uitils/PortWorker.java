@@ -5,6 +5,7 @@ import app.simsmartgsm.service.GsmListenerService;
 import com.fazecast.jSerialComm.SerialPort;
 import lombok.extern.slf4j.Slf4j;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -99,6 +100,7 @@ public class PortWorker implements Runnable {
             helper.setTextMode(true);
             helper.setCharset("GSM");
             helper.setNewMessageIndicationDefault(); // ✅ thêm dòng này để modem báo SMS mới
+            startUrcListener();
 
             log.info("✅ Opened port {}", sim.getComName());
             return true;
@@ -110,6 +112,30 @@ public class PortWorker implements Runnable {
         }
     }
 
+    private void startUrcListener() {
+        new Thread(() -> {
+            try {
+                var in = port.getInputStream();
+                StringBuilder sb = new StringBuilder();
+                byte[] buf = new byte[128];
+                while (running && port.isOpen()) {
+                    int n = in.read(buf);
+                    if (n > 0) {
+                        String chunk = new String(buf, 0, n, StandardCharsets.ISO_8859_1);
+                        sb.append(chunk);
+                        String all = sb.toString();
+                        if (all.contains("+CMTI:")) {
+                            log.info("📨 URC báo có SMS mới trên {}", sim.getComName());
+                            forceScan(); // quét ngay
+                            sb.setLength(0); // reset buffer
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.error("❌ URC listener error: {}", e.getMessage());
+            }
+        }, "URC-" + sim.getComName()).start();
+    }
 
     /** Đóng port */
     private void closePort() {
