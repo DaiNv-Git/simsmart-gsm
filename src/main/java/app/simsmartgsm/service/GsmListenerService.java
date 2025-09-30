@@ -47,7 +47,7 @@ public class GsmListenerService {
     public void rentSim(Sim sim, Long accountId, List<String> services,
                         int durationMinutes, Country country, String orderId, String type) {
         RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes,
-                country, orderId, OtpSessionType.fromString(type));
+                country, orderId, OtpSessionType.fromString(type),false);
         activeSessions.computeIfAbsent(sim.getId(), k -> new CopyOnWriteArrayList<>()).add(session);
 
         log.info("➕ Rent SIM {} by acc={} services={} duration={}m",
@@ -148,6 +148,11 @@ public class GsmListenerService {
 
     // === Xử lý khi nhận OTP ===
     private void handleOtpReceived(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
+        if (s.isOtpReceived()) {
+            log.info("⚠️ Order {} đã được cập nhật SUCCESS trước đó, bỏ qua OTP mới", s.getOrderId());
+            return;
+        }
+
         String resolvedServiceCode = serviceRepository.findByCode(service)
                 .map(svc -> svc.getCode())
                 .orElse(service);
@@ -173,9 +178,10 @@ public class GsmListenerService {
         log.info("💾 Saved SMS to DB orderId={} simPhone={} otp={} duration={}m",
                 sms.getOrderId(), sms.getSimPhone(), otp, sms.getDurationMinutes());
 
-        // ✅ Call API update success
+        // ✅ Call API update success duy nhất 1 lần
         try {
             callUpdateSuccessApi(s.getOrderId());
+            s.setOtpReceived(true); // đánh dấu đã xử lý OTP
         } catch (Exception e) {
             log.error("❌ Error calling update success API for orderId={}", s.getOrderId(), e);
         }
@@ -200,6 +206,7 @@ public class GsmListenerService {
             log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
         }
     }
+
 
     // === Schedule check để auto refund nếu hết hạn mà không có OTP ===
     private void scheduleRefundCheck(RentSession session) {
@@ -254,7 +261,7 @@ public class GsmListenerService {
         private Country country;
         private String orderId;
         private OtpSessionType type;
-
+        private boolean otpReceived;
         boolean isActive() {
             return Instant.now().isBefore(startTime.plus(Duration.ofMinutes(durationMinutes)));
         }
