@@ -31,7 +31,9 @@ public class PortWorker implements Runnable {
 
     public void stop() {
         running = false;
+        closePort();
     }
+
     /** Đẩy task gửi SMS vào queue */
     public void sendSms(String to, String content) {
         queue.offer(new Task(TaskType.SEND, to, content));

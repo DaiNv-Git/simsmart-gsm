@@ -94,7 +94,11 @@ public class GsmListenerService {
         } else {
             log.info("✅ Order {} đã có OTP, không cần refund", session.getOrderId());
         }
+
+        // ✅ Sau khi xử lý xong, check có còn session active không
+        stopWorkerIfNoActiveSession(sim);
     }
+
 
     // === Worker cho SIM ===
     private void startWorkerForSim(Sim sim) {
@@ -245,10 +249,23 @@ public class GsmListenerService {
         Matcher m = Pattern.compile("\\b\\d{4,8}\\b").matcher(content);
         return m.find() ? m.group() : null;
     }
+    private void stopWorkerIfNoActiveSession(Sim sim) {
+        List<RentSession> sessions = activeSessions.getOrDefault(sim.getId(), List.of());
+        boolean hasActive = sessions.stream().anyMatch(RentSession::isActive);
+        if (!hasActive) {
+            PortWorker w = workers.remove(sim.getComName());
+            if (w != null) {
+                w.stop(); // bên PortWorker nhớ implement stop()
+                log.info("🛑 Stop worker for SIM={} vì không còn session active", sim.getPhoneNumber());
+            }
+        }
+    }
+
 
     private String generateOtp() {
         return String.valueOf(ThreadLocalRandom.current().nextInt(100000, 999999));
     }
+
 
     // === RentSession ===
     @Data
