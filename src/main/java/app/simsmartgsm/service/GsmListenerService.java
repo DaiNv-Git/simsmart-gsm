@@ -219,12 +219,13 @@ public class GsmListenerService {
 
     // === Call API update success/refund ===
     private void callUpdateSuccessApi(String orderId) {
-        String url = orderApiBaseUrl + "/api/otp/orders/" + orderId + "/success";
+        // Ghép path đúng với API thực tế
+        String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/success";
         restTemplate.postForEntity(url, null, Void.class);
     }
 
     private void callUpdateRefundApi(String orderId) {
-        String url = orderApiBaseUrl + "/api/otp/orders/" + orderId + "/refund";
+        String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/refund";
         restTemplate.postForEntity(url, null, Void.class);
     }
 
