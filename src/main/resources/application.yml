@@ -21,3 +21,6 @@ services:
 #  level:
 #    root: DEBUG
 
+gsm:
+  order-api:
+    base-url: http://72.60.41.168:9090/

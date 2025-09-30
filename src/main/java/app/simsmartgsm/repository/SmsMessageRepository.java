@@ -9,4 +9,7 @@ import org.springframework.stereotype.Repository;
 public interface SmsMessageRepository extends MongoRepository<SmsMessage, Long> {
     Page<SmsMessage> findByTypeAndDeviceName(String type,String deviceName, Pageable pageable);
 
+    boolean existsByOrderId(String orderId);
+
+    boolean existsByOrderIdAndType(String orderId, String type);
 }

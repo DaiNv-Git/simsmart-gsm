@@ -13,15 +13,15 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.messaging.simp.stomp.StompSession;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -33,26 +33,29 @@ public class GsmListenerService {
     private final RemoteStompClientConfig remoteStompClientConfig;
     private final SmsMessageRepository smsMessageRepository;
     private final ServiceRepository serviceRepository;
-    /** Map quản lý worker cho từng SIM (COM port) */
     private final Map<String, PortWorker> workers = new ConcurrentHashMap<>();
-
-    /** Map quản lý session thuê SIM */
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
 
     private final boolean testMode = true;
+    private final RestTemplate restTemplate = new RestTemplate();
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+
+    @Value("${gsm.order-api.base-url}")
+    private String orderApiBaseUrl;
 
     // === Thuê SIM ===
     public void rentSim(Sim sim, Long accountId, List<String> services,
-                        int durationMinutes, Country country,String orderId,String type) {
+                        int durationMinutes, Country country, String orderId, String type) {
         RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes,
-                country,orderId,OtpSessionType.fromString(type));
+                country, orderId, OtpSessionType.fromString(type));
         activeSessions.computeIfAbsent(sim.getId(), k -> new CopyOnWriteArrayList<>()).add(session);
 
         log.info("➕ Rent SIM {} by acc={} services={} duration={}m",
                 sim.getPhoneNumber(), accountId, services, durationMinutes);
 
-        // Start worker nếu chưa có
         startWorkerForSim(sim);
+
+        scheduler.schedule(() -> checkAndRefund(sim, session), durationMinutes, TimeUnit.MINUTES);
 
         // --- TEST MODE ---
         if (testMode && !services.isEmpty()) {
@@ -76,7 +79,24 @@ public class GsmListenerService {
         }
     }
 
-    // === Tạo worker cho SIM ===Forward
+    private void checkAndRefund(Sim sim, RentSession session) {
+        if (session.isActive()) return;
+
+        boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
+        if (!hasOtp) {
+            try {
+                callUpdateRefundApi(session.getOrderId());
+                log.info("🔄 Auto refund orderId={} (SIM={}, acc={}) vì hết hạn không nhận được OTP",
+                        session.getOrderId(), sim.getPhoneNumber(), session.getAccountId());
+            } catch (Exception e) {
+                log.error("❌ Error calling refund API for orderId={}", session.getOrderId(), e);
+            }
+        } else {
+            log.info("✅ Order {} đã có OTP, không cần refund", session.getOrderId());
+        }
+    }
+
+    // === Worker cho SIM ===
     private void startWorkerForSim(Sim sim) {
         workers.computeIfAbsent(sim.getComName(), com -> {
             PortWorker worker = new PortWorker(sim, 4000, this);
@@ -95,7 +115,7 @@ public class GsmListenerService {
         }
     }
 
-    // === Xử lý SMS nhận về từ PortWorker ===
+    // === Xử lý SMS nhận về ===
     public void processSms(Sim sim, AtCommandHelper.SmsRecord rec) {
         List<RentSession> sessions = new ArrayList<>(activeSessions.getOrDefault(sim.getId(), List.of()));
         if (sessions.isEmpty()) return;
@@ -108,13 +128,11 @@ public class GsmListenerService {
 
         for (RentSession s : sessions) {
             if (!s.isActive()) continue;
-
             for (String service : s.getServices()) {
                 String serviceNorm = normalize(service);
                 String servicePrefix = serviceNorm.substring(0, Math.min(4, serviceNorm.length()));
-
                 if (smsNorm.startsWith(servicePrefix)) {
-                    forwardToSocket(sim, s, service, rec, otp);
+                    handleOtpReceived(sim, s, service, rec, otp);
                     matched = true;
                 }
             }
@@ -123,24 +141,20 @@ public class GsmListenerService {
         if (!matched) {
             RentSession first = sessions.stream().filter(RentSession::isActive).findFirst().orElse(null);
             if (first != null) {
-                forwardToSocket(sim, first, first.getServices().isEmpty() ? "UNKNOWN" : first.getServices().get(0), rec, otp);
+                handleOtpReceived(sim, first, first.getServices().isEmpty() ? "UNKNOWN" : first.getServices().get(0), rec, otp);
             }
         }
     }
 
-
-    // === Forward OTP lên broker ===
-    private void forwardToSocket(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
-        handleOtpReceived(sim, s, service, rec, otp);
-    }
-
+    // === Xử lý khi nhận OTP ===
     private void handleOtpReceived(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
         String resolvedServiceCode = serviceRepository.findByCode(service)
                 .map(svc -> svc.getCode())
                 .orElse(service);
+
         SmsMessage sms = SmsMessage.builder()
                 .orderId(s.getOrderId())
-                .accountId(s.getAccountId()) // 👈 thêm dòng này
+                .accountId(s.getAccountId())
                 .durationMinutes(s.getDurationMinutes())
                 .deviceName(sim.getDeviceName())
                 .comPort(sim.getComName())
@@ -154,13 +168,19 @@ public class GsmListenerService {
                 .timestamp(Instant.now())
                 .build();
 
-
         smsMessageRepository.save(sms);
 
         log.info("💾 Saved SMS to DB orderId={} simPhone={} otp={} duration={}m",
                 sms.getOrderId(), sms.getSimPhone(), otp, sms.getDurationMinutes());
 
+        // ✅ Call API update success
+        try {
+            callUpdateSuccessApi(s.getOrderId());
+        } catch (Exception e) {
+            log.error("❌ Error calling update success API for orderId={}", s.getOrderId(), e);
+        }
 
+        // Forward OTP lên remote socket
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
@@ -172,21 +192,40 @@ public class GsmListenerService {
         wsMessage.put("fromNumber", rec.sender);
         wsMessage.put("otp", otp);
 
-        StompSession session = remoteStompClientConfig.getSession();
-        if (session != null && session.isConnected()) {
-            session.send("/topic/receive-otp", wsMessage);
+        StompSession stompSession = remoteStompClientConfig.getSession();
+        if (stompSession != null && stompSession.isConnected()) {
+            stompSession.send("/topic/receive-otp", wsMessage);
             log.info("📤 Forward OTP [{}] for acc={} service={} -> remote", otp, s.getAccountId(), service);
         } else {
             log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
         }
-        // 3. Nếu type = buy.otp.service → đóng session ngay
-//        if (s.getType() == OtpSessionType.BUY) {
-//            log.info("💾 Delete sessions", sms.getOrderId(), sms.getSimPhone());
-//            activeSessions.computeIfPresent(sim.getId(), (k, list) -> {
-//                list.remove(s);
-//                return list;
-//            });
-//        }
+    }
+
+    // === Schedule check để auto refund nếu hết hạn mà không có OTP ===
+    private void scheduleRefundCheck(RentSession session) {
+        scheduler.schedule(() -> {
+            if (session.isActive()) return;
+            boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
+            if (!hasOtp) {
+                try {
+                    callUpdateRefundApi(session.getOrderId());
+                    log.info("🔄 Auto refund orderId={} vì hết hạn không nhận được OTP", session.getOrderId());
+                } catch (Exception e) {
+                    log.error("❌ Error calling refund API for orderId={}", session.getOrderId(), e);
+                }
+            }
+        }, session.getDurationMinutes(), TimeUnit.MINUTES);
+    }
+
+    // === Call API update success/refund ===
+    private void callUpdateSuccessApi(String orderId) {
+        String url = orderApiBaseUrl + "/api/orders/" + orderId + "/success";
+        restTemplate.postForEntity(url, null, Void.class);
+    }
+
+    private void callUpdateRefundApi(String orderId) {
+        String url = orderApiBaseUrl + "/api/orders/" + orderId + "/refund";
+        restTemplate.postForEntity(url, null, Void.class);
     }
 
     // === Utils ===
@@ -196,7 +235,8 @@ public class GsmListenerService {
 
     private String extractOtp(String content) {
         Matcher m = Pattern.compile("\\b\\d{4,8}\\b").matcher(content);
-        return m.find() ? m.group() : null;    }
+        return m.find() ? m.group() : null;
+    }
 
     private String generateOtp() {
         return String.valueOf(ThreadLocalRandom.current().nextInt(100000, 999999));
@@ -213,6 +253,7 @@ public class GsmListenerService {
         private Country country;
         private String orderId;
         private OtpSessionType type;
+
         boolean isActive() {
             return Instant.now().isBefore(startTime.plus(Duration.ofMinutes(durationMinutes)));
         }
