@@ -47,7 +47,7 @@ public class GsmListenerService {
     public void rentSim(Sim sim, Long accountId, List<String> services,
                         int durationMinutes, Country country, String orderId, String type) {
         RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes,
-                country, orderId, OtpSessionType.fromString(type),false,type);
+                country, orderId, OtpSessionType.fromString(type), false, type);
         activeSessions.computeIfAbsent(sim.getId(), k -> new CopyOnWriteArrayList<>()).add(session);
 
         log.info("➕ Rent SIM {} by acc={} services={} duration={}m",
@@ -60,9 +60,10 @@ public class GsmListenerService {
         // --- TEST MODE ---
         if (testMode && !services.isEmpty()) {
             String service = services.get(0);
-            new Thread(() -> {
+
+            // fake SMS mỗi 30s
+            scheduler.scheduleAtFixedRate(() -> {
                 try {
-                    Thread.sleep(2000);
                     String otp = generateOtp();
                     String fakeSms = service.toUpperCase() + " OTP " + otp;
 
@@ -70,12 +71,12 @@ public class GsmListenerService {
                     rec.sender = "TEST-SENDER";
                     rec.body = fakeSms;
 
-                    log.info("📩 [TEST MODE] Fake incoming SMS: {}", rec.body);
+                    log.info("📩 [TEST MODE] Fake incoming SMS every 30s: {}", rec.body);
                     processSms(sim, rec);
                 } catch (Exception e) {
-                    log.error("❌ Error in test SMS thread: {}", e.getMessage(), e);
+                    log.error("❌ Error in scheduled test SMS: {}", e.getMessage(), e);
                 }
-            }).start();
+            }, 2, 30, TimeUnit.SECONDS); // delay 2s, sau đó lặp 30s
         }
     }
 
@@ -95,10 +96,8 @@ public class GsmListenerService {
             log.info("✅ Order {} đã có OTP, không cần refund", session.getOrderId());
         }
 
-        // ✅ Sau khi xử lý xong, check có còn session active không
         stopWorkerIfNoActiveSession(sim);
     }
-
 
     // === Worker cho SIM ===
     private void startWorkerForSim(Sim sim) {
@@ -183,15 +182,15 @@ public class GsmListenerService {
         log.info("💾 Saved SMS to DB orderId={} simPhone={} otp={} duration={}m",
                 sms.getOrderId(), sms.getSimPhone(), otp, sms.getDurationMinutes());
 
-        // ✅ Call API update success duy nhất 1 lần
         try {
             callUpdateSuccessApi(s.getOrderId());
-            s.setOtpReceived(true); // đánh dấu đã xử lý OTP
+            s.setOtpReceived(true);
         } catch (Exception e) {
             log.error("❌ Error calling update success API for orderId={}", s.getOrderId(), e);
         }
 
-        // Forward OTP lên remote socket
+        // === TẠM THỜI COMMENT LẠI đoạn bắn OTP qua socket ===
+        /*
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
@@ -210,8 +209,8 @@ public class GsmListenerService {
         } else {
             log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
         }
+        */
     }
-
 
     // === Schedule check để auto refund nếu hết hạn mà không có OTP ===
     private void scheduleRefundCheck(RentSession session) {
@@ -231,7 +230,6 @@ public class GsmListenerService {
 
     // === Call API update success/refund ===
     private void callUpdateSuccessApi(String orderId) {
-        // Ghép path đúng với API thực tế
         String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/success";
         restTemplate.postForEntity(url, null, Void.class);
     }
@@ -250,23 +248,22 @@ public class GsmListenerService {
         Matcher m = Pattern.compile("\\b\\d{4,8}\\b").matcher(content);
         return m.find() ? m.group() : null;
     }
+
     private void stopWorkerIfNoActiveSession(Sim sim) {
         List<RentSession> sessions = activeSessions.getOrDefault(sim.getId(), List.of());
         boolean hasActive = sessions.stream().anyMatch(RentSession::isActive);
         if (!hasActive) {
             PortWorker w = workers.remove(sim.getComName());
             if (w != null) {
-                w.stop(); // bên PortWorker nhớ implement stop()
+                w.stop();
                 log.info("🛑 Stop worker for SIM={} vì không còn session active", sim.getPhoneNumber());
             }
         }
     }
 
-
     private String generateOtp() {
         return String.valueOf(ThreadLocalRandom.current().nextInt(100000, 999999));
     }
-
 
     // === RentSession ===
     @Data
@@ -281,6 +278,7 @@ public class GsmListenerService {
         private OtpSessionType type;
         private boolean otpReceived;
         private String serviceType;
+
         boolean isActive() {
             return Instant.now().isBefore(startTime.plus(Duration.ofMinutes(durationMinutes)));
         }
