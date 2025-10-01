@@ -112,7 +112,7 @@ public class GsmListenerService {
         }
 
         // Loại session đã hết hạn khỏi danh sách
-        endSession(sim, session, "expire");
+//        endSession(sim, session, "expire");
     }
 
     // === Worker cho SIM ===
@@ -157,16 +157,6 @@ public class GsmListenerService {
         List<RentSession> sessions = activeSessions.get(simId);
         if (sessions == null || sessions.isEmpty()) return false;
         return sessions.stream().anyMatch(RentSession::isActive);
-    }
-
-    // === Gửi SMS ===
-    public void sendSms(Sim sim, String to, String content) {
-        PortWorker w = workers.get(sim.getComName());
-        if (w != null) {
-            w.sendSms(to, content);
-        } else {
-            log.warn("⚠️ No worker for sim {}. Queue ignored", sim.getComName());
-        }
     }
 
     // === Xử lý SMS nhận về ===
@@ -251,10 +241,10 @@ public class GsmListenerService {
         forwardOtpToRemote(sim, s, resolvedServiceCode, rec, otp);
 
         // Phân biệt RENT vs BUY
-        if (s.getType() == OtpSessionType.BUY) {
-            // BUY: đóng session ngay
-            endSession(sim, s, "buy-first-otp");
-        }
+//        if (s.getType() == OtpSessionType.BUY) {
+//            // BUY: đóng session ngay
+//            endSession(sim, s, "buy-first-otp");
+//        }
         // RENT: giữ session đến hết hạn; không làm gì thêm
     }
 
