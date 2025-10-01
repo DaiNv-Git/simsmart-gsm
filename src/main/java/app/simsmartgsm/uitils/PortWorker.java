@@ -10,7 +10,6 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
 
 @Slf4j
 public class PortWorker implements Runnable {
@@ -47,43 +46,56 @@ public class PortWorker implements Runnable {
 
     @Override
     public void run() {
-        log.info("🔄 Worker loop started for {}", sim.getComName());
-        while (running) {
-            try (AtCommandHelper helper = AtCommandHelper.open(sim.getComName(), 115200, 3000, 3000)) {
-                this.helper = helper;
+        log.info("▶️ Start worker for SIM {} (COM={})", sim.getPhoneNumber(), sim.getComName());
+        try (AtCommandHelper helper = AtCommandHelper.open(
+                sim.getComName(), 115200, 4000, 2000)) {
 
-                // Init modem
-                helper.echoOff();
-                helper.setTextMode(true);
-                helper.setCharset("GSM");
-                helper.setNewMessageIndicationDefault();
-                log.info("✅ Port {} initialized OK", sim.getComName());
+            helper.echoOff();
+            helper.setTextMode(true);
+            helper.setNewMessageIndicationDefault();
+            log.info("🔄 Worker loop started for {}", sim.getComName());
 
-                // main loop scan + send queue
-                while (running && helper.ping()) {
-                    // 1. xử lý SMS gửi đi từ queue
-                    Task task = queue.poll(2, TimeUnit.SECONDS);
-                    if (task != null && task.type == TaskType.SEND) {
-                        boolean ok = helper.sendTextSms(task.to, task.content, Duration.ofSeconds(30));
-                        log.info("📤 Sent SMS {} -> {} ok={}", sim.getComName(), task.to, ok);
-                    }
+            while (running) {
+                try {
+                    log.debug("🔍 Scanning for unread SMS on {}", sim.getComName());
+                    System.out.println("🔍 SCAN SMS on " + sim.getComName());
 
-                    // 2. scan SMS mới
-                    List<AtCommandHelper.SmsRecord> unread = helper.listUnreadSmsText(5000);
+                    // 1. Lấy SMS chưa đọc
+                    List<AtCommandHelper.SmsRecord> unread = helper.listUnreadSmsText(1000);
+
                     for (AtCommandHelper.SmsRecord rec : unread) {
+                        log.info("📩 New SMS on {}: {}", sim.getComName(), rec);
+
+                        // 2. Gửi về GsmListenerService xử lý
                         listenerService.processSms(sim, rec);
-                        helper.deleteSms(rec.index); // xóa để tránh trùng
+
+                        // 3. Xoá SMS để không đọc lại
+                        try {
+                            boolean deleted = helper.deleteSms(rec.index);
+                            if (deleted) {
+                                log.info("🗑 Deleted SMS index {} on {}", rec.index, sim.getComName());
+                            } else {
+                                log.warn("⚠️ Failed to delete SMS index {} on {}", rec.index, sim.getComName());
+                            }
+                        } catch (Exception e) {
+                            log.warn("⚠️ Error deleting SMS index {}: {}", rec.index, e.getMessage());
+                        }
                     }
+
+                    // 4. Nghỉ theo chu kỳ scan
+                    Thread.sleep(scanIntervalMs);
+
+                } catch (Exception e) {
+                    log.error("❌ Error scanning SIM {}: {}", sim.getComName(), e.getMessage(), e);
+                    Thread.sleep(2000); // nghỉ 2s rồi thử lại
                 }
-
-            } catch (Exception e) {
-                log.warn("⚠️ Worker error on {}: {}. Will retry after 3s", sim.getComName(), e.getMessage());
-                try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
             }
+        } catch (Exception e) {
+            log.error("❌ Cannot init PortWorker for {}: {}", sim.getComName(), e.getMessage(), e);
+        } finally {
+            log.info("⏹ Worker stopped for SIM {} (COM={})", sim.getPhoneNumber(), sim.getComName());
         }
-        log.info("🛑 Worker loop stopped for {}", sim.getComName());
     }
-
     /** Đảm bảo port mở, nếu chưa thì mở lại */
     /** Đảm bảo port mở, nếu chưa thì mở lại */
     private boolean ensurePort() {
