@@ -36,7 +36,7 @@ public class GsmListenerService {
     private final Map<String, PortWorker> workers = new ConcurrentHashMap<>();
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
 
-    private final boolean testMode = true;
+    private final boolean testMode = true; // bật/tắt test mode ở đây
     private final RestTemplate restTemplate = new RestTemplate();
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
 
@@ -60,10 +60,9 @@ public class GsmListenerService {
         // --- TEST MODE ---
         if (testMode && !services.isEmpty()) {
             String service = services.get(0);
-
-            // fake SMS mỗi 30s
-            scheduler.scheduleAtFixedRate(() -> {
+            new Thread(() -> {
                 try {
+                    Thread.sleep(2000); // delay 2s
                     String otp = generateOtp();
                     String fakeSms = service.toUpperCase() + " OTP " + otp;
 
@@ -71,12 +70,12 @@ public class GsmListenerService {
                     rec.sender = "TEST-SENDER";
                     rec.body = fakeSms;
 
-                    log.info("📩 [TEST MODE] Fake incoming SMS every 30s: {}", rec.body);
+                    log.info("📩 [TEST MODE] Fake incoming SMS: {}", rec.body);
                     processSms(sim, rec);
                 } catch (Exception e) {
-                    log.error("❌ Error in scheduled test SMS: {}", e.getMessage(), e);
+                    log.error("❌ Error in test SMS thread: {}", e.getMessage(), e);
                 }
-            }, 2, 30, TimeUnit.SECONDS); // delay 2s, sau đó lặp 30s
+            }).start();
         }
     }
 
@@ -86,7 +85,7 @@ public class GsmListenerService {
         boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
         if (!hasOtp) {
             try {
-//                callUpdateRefundApi(session.getOrderId());
+                callUpdateRefundApi(session.getOrderId());
                 log.info("🔄 Auto refund orderId={} (SIM={}, acc={}) vì hết hạn không nhận được OTP",
                         session.getOrderId(), sim.getPhoneNumber(), session.getAccountId());
             } catch (Exception e) {
@@ -151,7 +150,7 @@ public class GsmListenerService {
 
     // === Xử lý khi nhận OTP ===
     private void handleOtpReceived(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
-        if (!testMode && s.isOtpReceived()) {
+        if (s.isOtpReceived()) {
             log.info("⚠️ Order {} đã được cập nhật SUCCESS trước đó, bỏ qua OTP mới", s.getOrderId());
             return;
         }
@@ -183,14 +182,13 @@ public class GsmListenerService {
                 sms.getOrderId(), sms.getSimPhone(), otp, sms.getDurationMinutes());
 
         try {
-//            callUpdateSuccessApi(s.getOrderId());
+            callUpdateSuccessApi(s.getOrderId());
             s.setOtpReceived(true);
         } catch (Exception e) {
             log.error("❌ Error calling update success API for orderId={}", s.getOrderId(), e);
         }
 
-        // === TẠM THỜI COMMENT LẠI đoạn bắn OTP qua socket ===
-       
+        // === Forward OTP qua socket ===
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
@@ -209,7 +207,6 @@ public class GsmListenerService {
         } else {
             log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
         }
-        
     }
 
     // === Schedule check để auto refund nếu hết hạn mà không có OTP ===
@@ -219,7 +216,7 @@ public class GsmListenerService {
             boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
             if (!hasOtp) {
                 try {
-//                    callUpdateRefundApi(session.getOrderId());
+                    callUpdateRefundApi(session.getOrderId());
                     log.info("🔄 Auto refund orderId={} vì hết hạn không nhận được OTP", session.getOrderId());
                 } catch (Exception e) {
                     log.error("❌ Error calling refund API for orderId={}", session.getOrderId(), e);
@@ -229,15 +226,15 @@ public class GsmListenerService {
     }
 
     // === Call API update success/refund ===
-//    private void callUpdateSuccessApi(String orderId) {
-//        String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/success";
-//        restTemplate.postForEntity(url, null, Void.class);
-//    }
-//
-//    private void callUpdateRefundApi(String orderId) {
-//        String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/refund";
-//        restTemplate.postForEntity(url, null, Void.class);
-//    }
+    private void callUpdateSuccessApi(String orderId) {
+        String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/success";
+        restTemplate.postForEntity(url, null, Void.class);
+    }
+
+    private void callUpdateRefundApi(String orderId) {
+        String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/refund";
+        restTemplate.postForEntity(url, null, Void.class);
+    }
 
     // === Utils ===
     private String normalize(String s) {
