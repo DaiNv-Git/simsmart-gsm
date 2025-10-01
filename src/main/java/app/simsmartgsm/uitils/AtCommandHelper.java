@@ -292,7 +292,15 @@ public class AtCommandHelper implements Closeable {
         Matcher m = Pattern.compile("\\+?CCID\\s*:\\s*([0-9A-Fa-f]+)").matcher(r);
         return m.find() ? m.group(1) : sanitizeSingleLine(r);
     }
-
+    public String queryOperator() throws IOException, InterruptedException {
+        String resp = sendAndRead("AT+COPS?", 2000);
+        // Ví dụ: +COPS: 0,0,"NTT DOCOMO NTT DOCOMO",7
+        Matcher m = Pattern.compile("\\+COPS:\\s*\\d+,\\d+,\"([^\"]+)\"").matcher(resp);
+        if (m.find()) {
+            return m.group(1); // Trả về NTT DOCOMO NTT DOCOMO
+        }
+        return "UNKNOWN";
+    }
     /** Lấy IMSI từ SIM. */
     public String queryImsi() throws IOException, InterruptedException {
         String r = sendAndRead("AT+CIMI", 2000);
@@ -307,14 +315,6 @@ public class AtCommandHelper implements Closeable {
         Matcher m = Pattern.compile("\\+?CNUM:.*?\"(\\+?\\d{6,20})\"").matcher(r);
         if (m.find()) return m.group(1);
         return null;
-    }
-
-    /** Lấy tên mạng (Viettel, Vinaphone, Docomo...). */
-    public String queryOperator() throws IOException, InterruptedException {
-        String r = sendAndRead("AT+COPS?", 2000);
-        // Ví dụ: +COPS: 0,0,"Viettel"
-        Matcher m = Pattern.compile("\\+?COPS:.*?\"([^\"]+)\"").matcher(r);
-        return m.find() ? m.group(1) : sanitizeSingleLine(r);
     }
 
     // ---------- DTO ----------
