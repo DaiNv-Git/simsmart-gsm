@@ -285,13 +285,7 @@ public class AtCommandHelper implements Closeable {
         m = Pattern.compile("\\+?CNUM:.*?(\\+?\\d{6,20})").matcher(r);
         return m.find() ? m.group(1) : null;
     }
-    /** Lấy ICCID (số seri thẻ SIM). */
-    public String queryIccid() throws IOException, InterruptedException {
-        String r = sendAndRead("AT+CCID", 2000);
-        // Ví dụ response: +CCID: 8981100025977896009F
-        Matcher m = Pattern.compile("\\+?CCID\\s*:\\s*([0-9A-Fa-f]+)").matcher(r);
-        return m.find() ? m.group(1) : sanitizeSingleLine(r);
-    }
+
     public String queryOperator() throws IOException, InterruptedException {
         String resp = sendAndRead("AT+COPS?", 2000);
         // Ví dụ: +COPS: 0,0,"NTT DOCOMO NTT DOCOMO",7
@@ -301,22 +295,6 @@ public class AtCommandHelper implements Closeable {
         }
         return "UNKNOWN";
     }
-    /** Lấy IMSI từ SIM. */
-    public String queryImsi() throws IOException, InterruptedException {
-        String r = sendAndRead("AT+CIMI", 2000);
-        Matcher m = Pattern.compile("(?m)^(\\d{5,20})$").matcher(r);
-        return m.find() ? m.group(1) : r.replaceAll("[^0-9]", "");
-    }
-
-    /** Lấy số điện thoại (nếu SIM lưu trong bộ nhớ). */
-    public String queryMsisdn() throws IOException, InterruptedException {
-        String r = sendAndRead("AT+CNUM", 2000);
-        // Ví dụ: +CNUM: "","84901234567",145,7,0,4
-        Matcher m = Pattern.compile("\\+?CNUM:.*?\"(\\+?\\d{6,20})\"").matcher(r);
-        if (m.find()) return m.group(1);
-        return null;
-    }
-
     // ---------- DTO ----------
     public static class SmsRecord {
         public Integer index;

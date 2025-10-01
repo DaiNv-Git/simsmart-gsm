@@ -210,24 +210,6 @@ public class GsmListenerService {
             log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
         }
     }
-
-
-    // === Schedule check để auto refund nếu hết hạn mà không có OTP ===
-    private void scheduleRefundCheck(RentSession session) {
-        scheduler.schedule(() -> {
-            if (session.isActive()) return;
-            boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
-            if (!hasOtp) {
-                try {
-                    callUpdateRefundApi(session.getOrderId());
-                    log.info("🔄 Auto refund orderId={} vì hết hạn không nhận được OTP", session.getOrderId());
-                } catch (Exception e) {
-                    log.error("❌ Error calling refund API for orderId={}", session.getOrderId(), e);
-                }
-            }
-        }, session.getDurationMinutes(), TimeUnit.MINUTES);
-    }
-
     // === Call API update success/refund ===
     private void callUpdateSuccessApi(String orderId) {
         // Ghép path đúng với API thực tế
