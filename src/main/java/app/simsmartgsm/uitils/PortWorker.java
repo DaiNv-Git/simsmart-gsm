@@ -7,9 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.List;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.*;
 
 @Slf4j
 public class PortWorker implements Runnable {
@@ -23,6 +21,9 @@ public class PortWorker implements Runnable {
     private SerialPort port;
     private AtCommandHelper helper;
 
+    // ✅ thêm scheduler cho retry scan
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+
     public PortWorker(Sim sim, long scanIntervalMs, GsmListenerService listenerService) {
         this.sim = sim;
         this.scanIntervalMs = scanIntervalMs;
@@ -32,6 +33,7 @@ public class PortWorker implements Runnable {
     public void stop() {
         running = false;
         closePort();
+        scheduler.shutdownNow();
     }
 
     /** Đẩy task gửi SMS vào queue */
@@ -43,6 +45,7 @@ public class PortWorker implements Runnable {
     public void forceScan() {
         queue.offer(new Task(TaskType.SCAN, null, null));
     }
+
     @Override
     public void run() {
         log.info("▶️ Start worker for SIM {} (COM={})", sim.getPhoneNumber(), sim.getComName());
@@ -53,7 +56,6 @@ public class PortWorker implements Runnable {
                     continue;
                 }
 
-                // Xử lý các task trong queue
                 Task task = queue.poll();
                 if (task != null) {
                     if (task.type == TaskType.SEND) {
@@ -62,8 +64,7 @@ public class PortWorker implements Runnable {
                         doScanSms();
                     }
                 } else {
-                    // nếu không có task thì tự quét định kỳ
-                    doScanSms();
+                    doScanSms(); // quét định kỳ
                     safeSleep(scanIntervalMs);
                 }
 
@@ -77,7 +78,6 @@ public class PortWorker implements Runnable {
         log.info("⏹ Worker stopped for {}", sim.getComName());
     }
 
-    /** Đảm bảo port mở, nếu chưa thì mở lại */
     /** Đảm bảo port mở, nếu chưa thì mở lại */
     private boolean ensurePort() {
         try {
@@ -97,7 +97,7 @@ public class PortWorker implements Runnable {
             helper = new AtCommandHelper(port);
             helper.setTextMode(true);
             helper.setCharset("GSM");
-            helper.setNewMessageIndicationDefault(); // ✅ thêm dòng này để modem báo SMS mới
+            helper.setNewMessageIndicationDefault(); // CNMI
             startUrcListener();
 
             log.info("✅ Opened port {}", sim.getComName());
@@ -114,23 +114,31 @@ public class PortWorker implements Runnable {
         new Thread(() -> {
             try {
                 var in = port.getInputStream();
+                byte[] buf = new byte[256];
                 StringBuilder sb = new StringBuilder();
-                byte[] buf = new byte[128];
                 while (running && port.isOpen()) {
                     int n = in.read(buf);
                     if (n > 0) {
                         String chunk = new String(buf, 0, n, StandardCharsets.ISO_8859_1);
                         sb.append(chunk);
+
                         String all = sb.toString();
-                        if (all.contains("+CMTI:")) {
-                            log.info("📨 URC báo có SMS mới trên {}", sim.getComName());
-                            forceScan(); // quét ngay
-                            sb.setLength(0); // reset buffer
+                        if (all.contains("\r\n")) {
+                            String[] lines = all.split("\r\n");
+                            for (String line : lines) {
+                                if (line.contains("+CMTI:")) {
+                                    log.info("📨 URC báo có SMS mới trên {}", sim.getComName());
+                                    forceScan();
+                                }
+                            }
+                            sb.setLength(0);
                         }
                     }
                 }
             } catch (Exception e) {
-                log.error("❌ URC listener error: {}", e.getMessage());
+                if (running) {
+                    log.error("❌ URC listener error on {}: {}", sim.getComName(), e.getMessage());
+                }
             }
         }, "URC-" + sim.getComName()).start();
     }
@@ -149,14 +157,18 @@ public class PortWorker implements Runnable {
             boolean ok = helper.sendTextSms(to, content, Duration.ofSeconds(30));
             log.info("📤 SEND result on {} -> {} : {}", sim.getComName(), to, ok ? "✅ OK" : "❌ FAIL");
 
-            // 👇 scan ngay để lấy SMS vừa về
-            forceScan();
+            if (ok) {
+                // ✅ retry scan nhiều lần để không miss SMS đến muộn
+                for (int i = 1; i <= 3; i++) {
+                    int delay = i * 2;
+                    scheduler.schedule(this::forceScan, delay, TimeUnit.SECONDS);
+                }
+            }
         } catch (Exception e) {
             log.error("❌ SEND error on {}: {}", sim.getComName(), e.getMessage());
             closePort();
         }
     }
-
 
     /** Quét SMS mới */
     private void doScanSms() {
@@ -170,14 +182,12 @@ public class PortWorker implements Runnable {
             for (var rec : smsList) {
                 log.info("📩 {} got SMS from {}: {}", sim.getComName(), rec.sender, rec.body);
 
-                // Forward SMS về listener service để xử lý OTP
                 try {
                     listenerService.processSms(sim, rec);
                 } catch (Exception e) {
                     log.error("❌ Error processing SMS {} on {}: {}", rec, sim.getComName(), e.getMessage(), e);
                 }
 
-                // Xóa SMS khỏi modem sau khi xử lý
                 if (rec.index != null) {
                     try {
                         boolean deleted = helper.deleteSms(rec.index);
@@ -192,7 +202,7 @@ public class PortWorker implements Runnable {
                 }
             }
         } catch (Exception e) {
-            log.error("❌ SCAN error {}: {}", sim.getComName(), e.getMessage(), e);
+            log.error("❌ SCAN error {}: {}", sim.getComName(), e.getMessage());
             closePort();
         }
     }
