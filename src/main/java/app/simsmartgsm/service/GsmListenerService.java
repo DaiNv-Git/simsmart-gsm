@@ -199,10 +199,10 @@ public class GsmListenerService {
 
     // === Xử lý khi nhận OTP ===
     private void handleOtpReceived(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
-        if (s.isOtpReceived()) {
-            log.info("⚠️ Order {} đã SUCCESS trước đó, bỏ qua OTP mới", s.getOrderId());
-            return;
-        }
+//        if (s.isOtpReceived()) {
+//            log.info("⚠️ Order {} đã SUCCESS trước đó, bỏ qua OTP mới", s.getOrderId());
+//            return;
+//        }
 
         String resolvedServiceCode = serviceRepository.findByCode(service)
                 .map(svc -> svc.getCode())
