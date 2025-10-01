@@ -1,8 +1,10 @@
 package app.simsmartgsm.uitils;
 
 public enum OtpSessionType {
-    RENT("rent.otp.service"),   // chỉ nhận 1 OTP, xong đóng session
-    BUY("buy.otp.service");     // giữ session đến khi hết hạn
+    RENT("rent.otp.service"),      // chỉ nhận 1 OTP, xong đóng session
+    BUY("buy.otp.service"),        // giữ session đến khi hết hạn (OTP SMS)
+    SMS("buy.sms.service"),        // dịch vụ SMS
+    CALL("buy.call.service");      // dịch vụ CALL
 
     private final String value;
 
