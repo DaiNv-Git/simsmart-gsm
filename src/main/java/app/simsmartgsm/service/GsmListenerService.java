@@ -36,7 +36,14 @@ public class GsmListenerService {
     private final Map<String, PortWorker> workers = new ConcurrentHashMap<>();
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
 
-    private final boolean testMode = true; // bật/tắt test mode ở đây
+    @Value("${gsm.test-mode:false}")
+    private boolean testMode;
+    @Value("${gsm.loop-test-sms-interval:30}")
+    private int loopTestSmsInterval;
+
+    @Value("${gsm.loop-test-sms:false}")
+    private boolean loopTestSms;
+
     private final RestTemplate restTemplate = new RestTemplate();
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
 
@@ -60,39 +67,61 @@ public class GsmListenerService {
         // --- TEST MODE ---
         if (testMode && !services.isEmpty()) {
             String service = services.get(0);
+
+            // Fake 1 SMS duy nhất sau 2s
             new Thread(() -> {
                 try {
-                    Thread.sleep(2000); // delay 2s
-                    String otp = generateOtp();
-                    String fakeSms = service.toUpperCase() + " OTP " + otp;
-
-                    AtCommandHelper.SmsRecord rec = new AtCommandHelper.SmsRecord();
-                    rec.sender = "TEST-SENDER";
-                    rec.body = fakeSms;
-
-                    log.info("📩 [TEST MODE] Fake incoming SMS: {}", rec.body);
-                    processSms(sim, rec);
+                    Thread.sleep(2000);
+                    sendFakeSms(sim, service);
                 } catch (Exception e) {
                     log.error("❌ Error in test SMS thread: {}", e.getMessage(), e);
                 }
             }).start();
+
+            // Nếu bật chế độ loop thì bắn SMS mỗi 30s
+            if (loopTestSms) {
+                scheduler.scheduleAtFixedRate(() -> {
+                    try {
+                        sendFakeSms(sim, service);
+                    } catch (Exception e) {
+                        log.error("❌ Error in scheduled test SMS: {}", e.getMessage(), e);
+                    }
+                }, loopTestSmsInterval, loopTestSmsInterval, TimeUnit.SECONDS);
+            }
         }
+    }
+
+    // Helper tạo fake SMS
+    private void sendFakeSms(Sim sim, String service) {
+        String otp = generateOtp();
+        String fakeSms = service.toUpperCase() + " OTP " + otp;
+
+        AtCommandHelper.SmsRecord rec = new AtCommandHelper.SmsRecord();
+        rec.sender = "TEST-SENDER";
+        rec.body = fakeSms;
+
+        log.info("📩 [TEST MODE] Fake incoming SMS: {}", rec.body);
+        processSms(sim, rec);
     }
 
     private void checkAndRefund(Sim sim, RentSession session) {
         if (session.isActive()) return;
 
-        boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
-        if (!hasOtp) {
-            try {
-                callUpdateRefundApi(session.getOrderId());
-                log.info("🔄 Auto refund orderId={} (SIM={}, acc={}) vì hết hạn không nhận được OTP",
-                        session.getOrderId(), sim.getPhoneNumber(), session.getAccountId());
-            } catch (Exception e) {
-                log.error("❌ Error calling refund API for orderId={}", session.getOrderId(), e);
+        if (!testMode) {
+            boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
+            if (!hasOtp) {
+                try {
+                    callUpdateRefundApi(session.getOrderId());
+                    log.info("🔄 Auto refund orderId={} (SIM={}, acc={}) vì hết hạn không nhận được OTP",
+                            session.getOrderId(), sim.getPhoneNumber(), session.getAccountId());
+                } catch (Exception e) {
+                    log.error("❌ Error calling refund API for orderId={}", session.getOrderId(), e);
+                }
+            } else {
+                log.info("✅ Order {} đã có OTP, không cần refund", session.getOrderId());
             }
         } else {
-            log.info("✅ Order {} đã có OTP, không cần refund", session.getOrderId());
+            log.debug("🧪 [TEST MODE] Skip refund check cho orderId={}", session.getOrderId());
         }
 
         stopWorkerIfNoActiveSession(sim);
@@ -150,7 +179,8 @@ public class GsmListenerService {
 
     // === Xử lý khi nhận OTP ===
     private void handleOtpReceived(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
-        if (s.isOtpReceived()) {
+        // Chỉ check isOtpReceived khi không phải test mode
+        if (!testMode && s.isOtpReceived()) {
             log.info("⚠️ Order {} đã được cập nhật SUCCESS trước đó, bỏ qua OTP mới", s.getOrderId());
             return;
         }
@@ -181,14 +211,18 @@ public class GsmListenerService {
         log.info("💾 Saved SMS to DB orderId={} simPhone={} otp={} duration={}m",
                 sms.getOrderId(), sms.getSimPhone(), otp, sms.getDurationMinutes());
 
-        try {
-            callUpdateSuccessApi(s.getOrderId());
-            s.setOtpReceived(true);
-        } catch (Exception e) {
-            log.error("❌ Error calling update success API for orderId={}", s.getOrderId(), e);
+        if (!testMode) {
+            try {
+                callUpdateSuccessApi(s.getOrderId());
+                s.setOtpReceived(true);
+            } catch (Exception e) {
+                log.error("❌ Error calling update success API for orderId={}", s.getOrderId(), e);
+            }
+        } else {
+            log.debug("🧪 [TEST MODE] Skip callUpdateSuccessApi & otpReceived flag cho orderId={}", s.getOrderId());
         }
 
-        // === Forward OTP qua socket ===
+        // Forward OTP qua socket
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
@@ -213,14 +247,18 @@ public class GsmListenerService {
     private void scheduleRefundCheck(RentSession session) {
         scheduler.schedule(() -> {
             if (session.isActive()) return;
-            boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
-            if (!hasOtp) {
-                try {
-                    callUpdateRefundApi(session.getOrderId());
-                    log.info("🔄 Auto refund orderId={} vì hết hạn không nhận được OTP", session.getOrderId());
-                } catch (Exception e) {
-                    log.error("❌ Error calling refund API for orderId={}", session.getOrderId(), e);
+            if (!testMode) {
+                boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
+                if (!hasOtp) {
+                    try {
+                        callUpdateRefundApi(session.getOrderId());
+                        log.info("🔄 Auto refund orderId={} vì hết hạn không nhận được OTP", session.getOrderId());
+                    } catch (Exception e) {
+                        log.error("❌ Error calling refund API for orderId={}", session.getOrderId(), e);
+                    }
                 }
+            } else {
+                log.debug("🧪 [TEST MODE] Skip auto refund check cho orderId={}", session.getOrderId());
             }
         }, session.getDurationMinutes(), TimeUnit.MINUTES);
     }

@@ -24,3 +24,6 @@ services:
 gsm:
   order-api:
     base-url: http://72.60.41.168:9090/
+  test-mode: true          # Bật chế độ test
+  loop-test-sms: false      # Nếu true thì bắn SMS test lặp lại
+  loop-test-sms-interval: 30   # Thời gian lặp (giây), ví dụ 30s
