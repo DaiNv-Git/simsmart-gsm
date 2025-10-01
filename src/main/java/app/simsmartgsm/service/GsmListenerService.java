@@ -190,7 +190,7 @@ public class GsmListenerService {
         }
 
         // === TẠM THỜI COMMENT LẠI đoạn bắn OTP qua socket ===
-        /*
+       
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
@@ -209,7 +209,7 @@ public class GsmListenerService {
         } else {
             log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
         }
-        */
+        
     }
 
     // === Schedule check để auto refund nếu hết hạn mà không có OTP ===
