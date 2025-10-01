@@ -49,6 +49,7 @@ public class SmsMessage {
 
     /** Loại tin nhắn: INBOX / OUTBOX / OTP... */
     private String type;
+    private String serviceType;
     
     private Long accountId;
 

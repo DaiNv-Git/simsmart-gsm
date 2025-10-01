@@ -47,7 +47,7 @@ public class GsmListenerService {
     public void rentSim(Sim sim, Long accountId, List<String> services,
                         int durationMinutes, Country country, String orderId, String type) {
         RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes,
-                country, orderId, OtpSessionType.fromString(type),false);
+                country, orderId, OtpSessionType.fromString(type),false,type);
         activeSessions.computeIfAbsent(sim.getId(), k -> new CopyOnWriteArrayList<>()).add(session);
 
         log.info("➕ Rent SIM {} by acc={} services={} duration={}m",
@@ -174,6 +174,7 @@ public class GsmListenerService {
                 .content(rec.body)
                 .modemResponse("OK")
                 .type("INBOX")
+                .serviceType(s.getServiceType())
                 .timestamp(Instant.now())
                 .build();
 
@@ -279,6 +280,7 @@ public class GsmListenerService {
         private String orderId;
         private OtpSessionType type;
         private boolean otpReceived;
+        private String serviceType;
         boolean isActive() {
             return Instant.now().isBefore(startTime.plus(Duration.ofMinutes(durationMinutes)));
         }
