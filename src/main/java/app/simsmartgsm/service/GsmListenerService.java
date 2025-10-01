@@ -151,7 +151,7 @@ public class GsmListenerService {
 
     // === Xử lý khi nhận OTP ===
     private void handleOtpReceived(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
-        if (s.isOtpReceived()) {
+        if (!testMode && s.isOtpReceived()) {
             log.info("⚠️ Order {} đã được cập nhật SUCCESS trước đó, bỏ qua OTP mới", s.getOrderId());
             return;
         }
