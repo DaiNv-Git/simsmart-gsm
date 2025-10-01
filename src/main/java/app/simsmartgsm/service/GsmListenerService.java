@@ -199,10 +199,11 @@ public class GsmListenerService {
 
     // === Xử lý khi nhận OTP ===
     private void handleOtpReceived(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
-//        if (s.isOtpReceived()) {
-//            log.info("⚠️ Order {} đã SUCCESS trước đó, bỏ qua OTP mới", s.getOrderId());
-//            return;
-//        }
+        // Với RENT thì không chặn OTP mới
+        if (s.getType() == OtpSessionType.BUY && s.isOtpReceived()) {
+            log.info("⚠️ BUY order {} đã SUCCESS, bỏ qua OTP mới", s.getOrderId());
+            return;
+        }
 
         String resolvedServiceCode = serviceRepository.findByCode(service)
                 .map(svc -> svc.getCode())
@@ -226,26 +227,24 @@ public class GsmListenerService {
 
         smsMessageRepository.save(sms);
 
-        log.info("💾 Saved SMS to DB orderId={} simPhone={} otp={} duration={}m type={}",
-                sms.getOrderId(), sms.getSimPhone(), otp, sms.getDurationMinutes(), s.getType());
+        log.info("💾 Saved SMS to DB orderId={} simPhone={} otp={} type={}",
+                sms.getOrderId(), sms.getSimPhone(), otp, s.getType());
 
-        // Gọi update success duy nhất 1 lần
         try {
-            callUpdateSuccessApi(s.getOrderId());
-            s.setOtpReceived(true);
+            // ✅ chỉ gọi API success 1 lần
+            if (!s.isOtpReceived()) {
+                callUpdateSuccessApi(s.getOrderId());
+                s.setOtpReceived(true);
+            }
         } catch (Exception e) {
             log.error("❌ Error calling update success API for orderId={}", s.getOrderId(), e);
         }
 
-        // Forward OTP lên remote socket
         forwardOtpToRemote(sim, s, resolvedServiceCode, rec, otp);
 
-        // Phân biệt RENT vs BUY
-//        if (s.getType() == OtpSessionType.BUY) {
-//            // BUY: đóng session ngay
-//            endSession(sim, s, "buy-first-otp");
-//        }
-        // RENT: giữ session đến hết hạn; không làm gì thêm
+        if (s.getType() == OtpSessionType.BUY) {
+            endSession(sim, s, "buy-first-otp");
+        }
     }
 
     private void forwardOtpToRemote(Sim sim, RentSession s, String resolvedServiceCode,

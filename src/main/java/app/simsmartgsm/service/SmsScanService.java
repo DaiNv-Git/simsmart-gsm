@@ -52,54 +52,54 @@ public class SmsScanService {
      */
     @Scheduled(fixedDelay = 10000)
     public void pollNewSms() {
-        SerialPort[] ports = SerialPort.getCommPorts();
-        for (SerialPort port : ports) {
-            String comPort = port.getSystemPortName();
-
-            // ⚡ Bỏ qua nếu port đã có worker (đang dùng cho rent)
-            if (gsmListenerService.hasWorker(comPort)) {
-                log.debug("⏭ Skip scan {} vì đã có worker quản lý", comPort);
-                continue;
-            }
-
-            try (AtCommandHelper helper = AtCommandHelper.open(comPort, 115200, 2000, 2000)) {
-                List<AtCommandHelper.SmsRecord> smsList = helper.listUnreadSmsText(5000);
-                if (smsList.isEmpty()) continue;
-
-                // lấy cache index cũ
-                Set<Integer> lastSeen = lastSeenIndexByPort.computeIfAbsent(comPort, k -> new HashSet<>());
-
-                // lọc ra tin nhắn mới chưa xử lý
-                List<SmsResponse> newMessages = new ArrayList<>();
-                for (AtCommandHelper.SmsRecord sms : smsList) {
-                    if (sms.index != null && !lastSeen.contains(sms.index)) {
-                        String phone = null;
-                        try {
-                            phone = helper.getCnum();
-                        } catch (IOException | InterruptedException ex) {
-                            log.warn("⚠️ Không lấy được số SIM ở {}: {}", comPort, ex.getMessage());
-                        }
-
-                        newMessages.add(new SmsResponse(
-                                comPort,
-                                phone,
-                                sms.sender,
-                                formatTimestamp(sms.timestamp),
-                                sms.body
-                        ));
-
-                        lastSeen.add(sms.index); // update cache
-                    }
-                }
-
-                if (!newMessages.isEmpty()) {
-                    messagingTemplate.convertAndSend("/topic/sms/" + comPort, newMessages);
-                    log.info("📩 Push {} tin nhắn mới từ {}", newMessages.size(), comPort);
-                }
-            } catch (Exception e) {
-                log.warn("❌ Không thể quét SMS ở {}", comPort, e.getMessage());
-            }
-        }
+//        SerialPort[] ports = SerialPort.getCommPorts();
+//        for (SerialPort port : ports) {
+//            String comPort = port.getSystemPortName();
+//
+//            // ⚡ Bỏ qua nếu port đã có worker (đang dùng cho rent)
+//            if (gsmListenerService.hasWorker(comPort)) {
+//                log.debug("⏭ Skip scan {} vì đã có worker quản lý", comPort);
+//                continue;
+//            }
+//
+//            try (AtCommandHelper helper = AtCommandHelper.open(comPort, 115200, 2000, 2000)) {
+//                List<AtCommandHelper.SmsRecord> smsList = helper.listUnreadSmsText(5000);
+//                if (smsList.isEmpty()) continue;
+//
+//                // lấy cache index cũ
+//                Set<Integer> lastSeen = lastSeenIndexByPort.computeIfAbsent(comPort, k -> new HashSet<>());
+//
+//                // lọc ra tin nhắn mới chưa xử lý
+//                List<SmsResponse> newMessages = new ArrayList<>();
+//                for (AtCommandHelper.SmsRecord sms : smsList) {
+//                    if (sms.index != null && !lastSeen.contains(sms.index)) {
+//                        String phone = null;
+//                        try {
+//                            phone = helper.getCnum();
+//                        } catch (IOException | InterruptedException ex) {
+//                            log.warn("⚠️ Không lấy được số SIM ở {}: {}", comPort, ex.getMessage());
+//                        }
+//
+//                        newMessages.add(new SmsResponse(
+//                                comPort,
+//                                phone,
+//                                sms.sender,
+//                                formatTimestamp(sms.timestamp),
+//                                sms.body
+//                        ));
+//
+//                        lastSeen.add(sms.index); // update cache
+//                    }
+//                }
+//
+//                if (!newMessages.isEmpty()) {
+//                    messagingTemplate.convertAndSend("/topic/sms/" + comPort, newMessages);
+//                    log.info("📩 Push {} tin nhắn mới từ {}", newMessages.size(), comPort);
+//                }
+//            } catch (Exception e) {
+//                log.warn("❌ Không thể quét SMS ở {}", comPort, e.getMessage());
+//            }
+//        }
     }
 
 
