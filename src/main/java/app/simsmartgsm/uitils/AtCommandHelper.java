@@ -30,11 +30,20 @@ public class AtCommandHelper implements Closeable {
         SerialPort port = SerialPort.getCommPort(portName);
         port.setBaudRate(baudRate);
         port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, readTimeoutMs, writeTimeoutMs);
-        if (!port.openPort()) {
+
+        boolean opened = port.openPort();
+        if (!opened) {
+            for (int i = 0; i < 3 && !opened; i++) {
+                try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                opened = port.openPort();
+            }
+        }
+        if (!opened) {
             throw new IOException("❌ Cannot open port " + portName);
         }
         return new AtCommandHelper(port, true);
     }
+
 
     // ---------- Ctor ----------
     public AtCommandHelper(SerialPort port) {
