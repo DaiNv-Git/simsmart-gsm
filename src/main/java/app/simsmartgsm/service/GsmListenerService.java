@@ -182,15 +182,14 @@ public class GsmListenerService {
         log.info("💾 Saved SMS to DB orderId={} simPhone={} otp={} duration={}m",
                 sms.getOrderId(), sms.getSimPhone(), otp, sms.getDurationMinutes());
 
-        // ✅ Call API update success duy nhất 1 lần
         try {
             callUpdateSuccessApi(s.getOrderId());
-            s.setOtpReceived(true); // đánh dấu đã xử lý OTP
+            s.setOtpReceived(true);
         } catch (Exception e) {
             log.error("❌ Error calling update success API for orderId={}", s.getOrderId(), e);
         }
 
-        // Forward OTP lên remote socket
+        // gửi socket
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
@@ -206,8 +205,16 @@ public class GsmListenerService {
         if (stompSession != null && stompSession.isConnected()) {
             stompSession.send("/topic/receive-otp", wsMessage);
             log.info("📤 Forward OTP [{}] for acc={} service={} -> remote", otp, s.getAccountId(), service);
-        } else {
-            log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
+        }
+
+        // ✅ thêm đoạn xử lý theo type
+        if (s.getType() == OtpSessionType.BUY) {
+            // khi là BUY -> kết thúc session ngay
+            s.setOtpReceived(true);
+            activeSessions.getOrDefault(sim.getId(), List.of()).remove(s);
+            log.info("🛑 Session orderId={} (type=BUY) đã được kết thúc sau khi nhận OTP", s.getOrderId());
+
+            stopWorkerIfNoActiveSession(sim);
         }
     }
 
