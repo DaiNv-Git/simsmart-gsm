@@ -20,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SmsScanService {
 
     private final SimpMessagingTemplate messagingTemplate;
+    private final GsmListenerService gsmListenerService;
 
     // lưu cache tin nhắn cũ để so sánh
     private final Map<String, Set<Integer>> lastSeenIndexByPort = new ConcurrentHashMap<>();
@@ -54,8 +55,15 @@ public class SmsScanService {
         SerialPort[] ports = SerialPort.getCommPorts();
         for (SerialPort port : ports) {
             String comPort = port.getSystemPortName();
+
+            // ⚡ Bỏ qua nếu port đã có worker (đang dùng cho rent)
+            if (gsmListenerService.hasWorker(comPort)) {
+                log.debug("⏭ Skip scan {} vì đã có worker quản lý", comPort);
+                continue;
+            }
+
             try (AtCommandHelper helper = AtCommandHelper.open(comPort, 115200, 2000, 2000)) {
-                List<SmsRecord> smsList = helper.listUnreadSmsText(5000);
+                List<AtCommandHelper.SmsRecord> smsList = helper.listUnreadSmsText(5000);
                 if (smsList.isEmpty()) continue;
 
                 // lấy cache index cũ
@@ -63,7 +71,7 @@ public class SmsScanService {
 
                 // lọc ra tin nhắn mới chưa xử lý
                 List<SmsResponse> newMessages = new ArrayList<>();
-                for (SmsRecord sms : smsList) {
+                for (AtCommandHelper.SmsRecord sms : smsList) {
                     if (sms.index != null && !lastSeen.contains(sms.index)) {
                         String phone = null;
                         try {
@@ -71,6 +79,7 @@ public class SmsScanService {
                         } catch (IOException | InterruptedException ex) {
                             log.warn("⚠️ Không lấy được số SIM ở {}: {}", comPort, ex.getMessage());
                         }
+
                         newMessages.add(new SmsResponse(
                                 comPort,
                                 phone,
@@ -78,20 +87,21 @@ public class SmsScanService {
                                 formatTimestamp(sms.timestamp),
                                 sms.body
                         ));
+
                         lastSeen.add(sms.index); // update cache
                     }
                 }
 
                 if (!newMessages.isEmpty()) {
-                    // ✅ push qua socket với format chuẩn
                     messagingTemplate.convertAndSend("/topic/sms/" + comPort, newMessages);
                     log.info("📩 Push {} tin nhắn mới từ {}", newMessages.size(), comPort);
                 }
             } catch (Exception e) {
-                log.warn("❌ Không thể quét SMS ở {}", comPort, e);
+                log.warn("❌ Không thể quét SMS ở {}", comPort, e.getMessage());
             }
         }
     }
+
 
     /**
      * Format timestamp từ modem sang yyyy-MM-dd HH:mm:ss

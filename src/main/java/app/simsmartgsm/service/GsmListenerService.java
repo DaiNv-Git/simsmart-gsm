@@ -308,6 +308,9 @@ public class GsmListenerService {
         restTemplate.postForEntity(url, null, Void.class);
     }
 
+    public boolean hasWorker(String comPort) {
+        return workers.containsKey(comPort);
+    }
     // === Utils ===
     private String normalize(String s) {
         return s == null ? "" : s.toLowerCase(Locale.ROOT).replaceAll("[_\\s]+", "");
