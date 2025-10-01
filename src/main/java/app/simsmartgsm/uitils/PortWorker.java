@@ -43,59 +43,40 @@ public class PortWorker implements Runnable {
     public void forceScan() {
         queue.offer(new Task(TaskType.SCAN, null, null));
     }
-
     @Override
     public void run() {
         log.info("▶️ Start worker for SIM {} (COM={})", sim.getPhoneNumber(), sim.getComName());
-        try (AtCommandHelper helper = AtCommandHelper.open(
-                sim.getComName(), 115200, 4000, 2000)) {
-
-            helper.echoOff();
-            helper.setTextMode(true);
-            helper.setNewMessageIndicationDefault();
-            log.info("🔄 Worker loop started for {}", sim.getComName());
-
-            while (running) {
-                try {
-                    log.debug("🔍 Scanning for unread SMS on {}", sim.getComName());
-                    System.out.println("🔍 SCAN SMS on " + sim.getComName());
-
-                    // 1. Lấy SMS chưa đọc
-                    List<AtCommandHelper.SmsRecord> unread = helper.listUnreadSmsText(1000);
-
-                    for (AtCommandHelper.SmsRecord rec : unread) {
-                        log.info("📩 New SMS on {}: {}", sim.getComName(), rec);
-
-                        // 2. Gửi về GsmListenerService xử lý
-                        listenerService.processSms(sim, rec);
-
-                        // 3. Xoá SMS để không đọc lại
-                        try {
-                            boolean deleted = helper.deleteSms(rec.index);
-                            if (deleted) {
-                                log.info("🗑 Deleted SMS index {} on {}", rec.index, sim.getComName());
-                            } else {
-                                log.warn("⚠️ Failed to delete SMS index {} on {}", rec.index, sim.getComName());
-                            }
-                        } catch (Exception e) {
-                            log.warn("⚠️ Error deleting SMS index {}: {}", rec.index, e.getMessage());
-                        }
-                    }
-
-                    // 4. Nghỉ theo chu kỳ scan
-                    Thread.sleep(scanIntervalMs);
-
-                } catch (Exception e) {
-                    log.error("❌ Error scanning SIM {}: {}", sim.getComName(), e.getMessage(), e);
-                    Thread.sleep(2000); // nghỉ 2s rồi thử lại
+        while (running) {
+            try {
+                if (!ensurePort()) {
+                    safeSleep(2000);
+                    continue;
                 }
+
+                // Xử lý các task trong queue
+                Task task = queue.poll();
+                if (task != null) {
+                    if (task.type == TaskType.SEND) {
+                        doSendSms(task.to, task.content);
+                    } else if (task.type == TaskType.SCAN) {
+                        doScanSms();
+                    }
+                } else {
+                    // nếu không có task thì tự quét định kỳ
+                    doScanSms();
+                    safeSleep(scanIntervalMs);
+                }
+
+            } catch (Exception e) {
+                log.error("❌ Worker error on {}: {}", sim.getComName(), e.getMessage(), e);
+                closePort();
+                safeSleep(2000);
             }
-        } catch (Exception e) {
-            log.error("❌ Cannot init PortWorker for {}: {}", sim.getComName(), e.getMessage(), e);
-        } finally {
-            log.info("⏹ Worker stopped for SIM {} (COM={})", sim.getPhoneNumber(), sim.getComName());
         }
+        closePort();
+        log.info("⏹ Worker stopped for {}", sim.getComName());
     }
+
     /** Đảm bảo port mở, nếu chưa thì mở lại */
     /** Đảm bảo port mở, nếu chưa thì mở lại */
     private boolean ensurePort() {
@@ -168,8 +149,8 @@ public class PortWorker implements Runnable {
             boolean ok = helper.sendTextSms(to, content, Duration.ofSeconds(30));
             log.info("📤 SEND result on {} -> {} : {}", sim.getComName(), to, ok ? "✅ OK" : "❌ FAIL");
 
+            // 👇 scan ngay để lấy SMS vừa về
             forceScan();
-
         } catch (Exception e) {
             log.error("❌ SEND error on {}: {}", sim.getComName(), e.getMessage());
             closePort();
