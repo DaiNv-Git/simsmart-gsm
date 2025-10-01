@@ -185,7 +185,7 @@ public class GsmListenerService {
         // ✅ Call API update success duy nhất 1 lần
         try {
             callUpdateSuccessApi(s.getOrderId());
-            s.setOtpReceived(true); // đánh dấu đã xử lý OTP
+            s.setOtpReceived(true);
         } catch (Exception e) {
             log.error("❌ Error calling update success API for orderId={}", s.getOrderId(), e);
         }
@@ -209,7 +209,16 @@ public class GsmListenerService {
         } else {
             log.warn("⚠️ Remote not connected, cannot forward OTP (service={}, otp={})", service, otp);
         }
+
+        // 🔑 Phân biệt RENT vs BUY
+        if (s.getType() == OtpSessionType.BUY) {
+            // BUY: đóng session ngay sau khi nhận OTP
+            s.setDurationMinutes(0);
+            stopWorkerIfNoActiveSession(sim);
+            log.info("🛑 BUY session orderId={} closed ngay sau OTP đầu", s.getOrderId());
+        }
     }
+
     // === Call API update success/refund ===
     private void callUpdateSuccessApi(String orderId) {
         // Ghép path đúng với API thực tế
