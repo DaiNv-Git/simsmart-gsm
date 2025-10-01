@@ -86,7 +86,7 @@ public class GsmListenerService {
         boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
         if (!hasOtp) {
             try {
-                callUpdateRefundApi(session.getOrderId());
+//                callUpdateRefundApi(session.getOrderId());
                 log.info("🔄 Auto refund orderId={} (SIM={}, acc={}) vì hết hạn không nhận được OTP",
                         session.getOrderId(), sim.getPhoneNumber(), session.getAccountId());
             } catch (Exception e) {
@@ -183,7 +183,7 @@ public class GsmListenerService {
                 sms.getOrderId(), sms.getSimPhone(), otp, sms.getDurationMinutes());
 
         try {
-            callUpdateSuccessApi(s.getOrderId());
+//            callUpdateSuccessApi(s.getOrderId());
             s.setOtpReceived(true);
         } catch (Exception e) {
             log.error("❌ Error calling update success API for orderId={}", s.getOrderId(), e);
@@ -219,7 +219,7 @@ public class GsmListenerService {
             boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
             if (!hasOtp) {
                 try {
-                    callUpdateRefundApi(session.getOrderId());
+//                    callUpdateRefundApi(session.getOrderId());
                     log.info("🔄 Auto refund orderId={} vì hết hạn không nhận được OTP", session.getOrderId());
                 } catch (Exception e) {
                     log.error("❌ Error calling refund API for orderId={}", session.getOrderId(), e);
@@ -229,15 +229,15 @@ public class GsmListenerService {
     }
 
     // === Call API update success/refund ===
-    private void callUpdateSuccessApi(String orderId) {
-        String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/success";
-        restTemplate.postForEntity(url, null, Void.class);
-    }
-
-    private void callUpdateRefundApi(String orderId) {
-        String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/refund";
-        restTemplate.postForEntity(url, null, Void.class);
-    }
+//    private void callUpdateSuccessApi(String orderId) {
+//        String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/success";
+//        restTemplate.postForEntity(url, null, Void.class);
+//    }
+//
+//    private void callUpdateRefundApi(String orderId) {
+//        String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/refund";
+//        restTemplate.postForEntity(url, null, Void.class);
+//    }
 
     // === Utils ===
     private String normalize(String s) {
