@@ -5,8 +5,10 @@ import app.simsmartgsm.service.GsmListenerService;
 import com.fazecast.jSerialComm.SerialPort;
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.*;
 
 @Slf4j
@@ -44,6 +46,20 @@ public class PortWorker implements Runnable {
     /** Đẩy task quét SMS vào queue */
     public void forceScan() {
         queue.offer(new Task(TaskType.SCAN, null, null));
+    }
+
+    /** Gửi AT command trực tiếp */
+    public void sendCommand(String cmd) {
+        if (port != null && port.isOpen()) {
+            try {
+                String at = cmd + "\r\n";
+                port.getOutputStream().write(at.getBytes(StandardCharsets.US_ASCII));
+                port.getOutputStream().flush();
+                log.info("➡️ Sent AT command to {}: {}", sim.getComName(), cmd);
+            } catch (IOException e) {
+                log.error("❌ Error sending AT command {}: {}", cmd, e.getMessage());
+            }
+        }
     }
 
     @Override
@@ -126,9 +142,24 @@ public class PortWorker implements Runnable {
                         if (all.contains("\r\n")) {
                             String[] lines = all.split("\r\n");
                             for (String line : lines) {
+                                line = line.trim();
+                                if (line.isEmpty()) continue;
+
                                 if (line.contains("+CMTI:")) {
                                     log.info("📨 URC báo có SMS mới trên {}", sim.getComName());
                                     forceScan();
+                                } else if (line.startsWith("RING")) {
+                                    log.info("📞 RING on {}", sim.getComName());
+                                } else if (line.startsWith("+CLIP")) {
+                                    String from = parseCaller(line);
+                                    log.info("📞 CLIP từ {} trên {}", from, sim.getComName());
+
+                                    // Lấy session active
+                                    List<GsmListenerService.RentSession> sessions =
+                                            listenerService.getActiveSessions(sim.getId());
+                                    if (!sessions.isEmpty()) {
+                                        listenerService.processIncomingCall(sim, from, sessions.get(0));
+                                    }
                                 }
                             }
                             sb.setLength(0);
@@ -141,6 +172,19 @@ public class PortWorker implements Runnable {
                 }
             }
         }, "URC-" + sim.getComName()).start();
+    }
+
+    private String parseCaller(String line) {
+        try {
+            int firstQuote = line.indexOf('"');
+            int secondQuote = line.indexOf('"', firstQuote + 1);
+            if (firstQuote >= 0 && secondQuote > firstQuote) {
+                return line.substring(firstQuote + 1, secondQuote);
+            }
+        } catch (Exception e) {
+            log.error("❌ Parse caller error: {}", e.getMessage());
+        }
+        return "UNKNOWN";
     }
 
     /** Đóng port */

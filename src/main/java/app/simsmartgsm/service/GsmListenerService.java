@@ -65,11 +65,11 @@ public class GsmListenerService {
     private int sshPort;
     @Value("${gsm.ssh.user:root}")
     private String sshUser;
-    @Value("${gsm.ssh.password:}")
+    @Value("${ssh.password:}")
     private String sshPassword;
-    @Value("${gsm.ssh.key-path:}")
+    @Value("${ssh.key-path:}")
     private String sshKeyPath;
-    @Value("${gsm.ssh.key-passphrase:}")
+    @Value("${ssh.key-passphrase:}")
     private String sshKeyPassphrase;
     @Value("${gsm.recording.local-temp:/tmp/recordings}")
     private String localRecordingDir;
@@ -263,24 +263,36 @@ public class GsmListenerService {
         session.setCallHandled(true);
         session.setCallStartTime(Instant.now());
 
-        if (session.isRecord()) {
-            new Thread(() -> {
-                try {
-                    log.info("🔴 Bắt đầu ghi âm (mock) tối đa 21s...");
-                    Thread.sleep(21000);
-                    String recordFile = saveCallRecording(sim, session, fromNumber);
-                    session.setRecordFilePath(recordFile);
-                    forwardCallResult(sim, session, fromNumber, "RECORDED", recordFile);
-                    closeSession(sim, session);
-                } catch (Exception e) {
-                    log.error("❌ Error ghi âm call: {}", e.getMessage(), e);
-                }
-            }).start();
+        // Nhấc máy bằng AT (nếu modem hỗ trợ voice)
+        sendAtCommand(sim, "ATA");
+
+        // Đặt lịch kết thúc sau 20 giây
+        scheduler.schedule(() -> {
+            try {
+                log.info("⏹️ Kết thúc cuộc gọi sau 20s cho SIM {}", sim.getPhoneNumber());
+                sendAtCommand(sim, "ATH"); // ngắt cuộc gọi
+                forwardCallResult(sim, session, fromNumber, "RECEIVED", null);
+                closeSession(sim, session);
+            } catch (Exception e) {
+                log.error("❌ Error khi kết thúc call: {}", e.getMessage(), e);
+            }
+        }, 20, TimeUnit.SECONDS);
+    }
+    // === Active Sessions ===
+    public List<RentSession> getActiveSessions(String simId) {
+        return activeSessions.getOrDefault(simId, List.of());
+    }
+
+    // Hàm gửi AT command
+    private void sendAtCommand(Sim sim, String command) {
+        PortWorker w = workers.get(sim.getComName());
+        if (w != null) {
+            w.sendCommand(command);
         } else {
-            forwardCallResult(sim, session, fromNumber, "RECEIVED", null);
-            closeSession(sim, session);
+            log.warn("⚠️ Không tìm thấy worker cho SIM {}", sim.getComName());
         }
     }
+
 
     private void forwardCallResult(Sim sim, RentSession s, String fromNumber, String status, String recordFile) {
         Map<String, Object> wsMessage = new HashMap<>();
@@ -452,7 +464,7 @@ public class GsmListenerService {
     // === RentSession ===
     @Data
     @AllArgsConstructor
-    static class RentSession {
+    public static class RentSession {
         private Long accountId;
         private List<String> services;
         private Instant startTime;
