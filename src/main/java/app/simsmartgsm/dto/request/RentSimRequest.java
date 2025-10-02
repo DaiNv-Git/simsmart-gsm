@@ -42,7 +42,7 @@ public class RentSimRequest {
     @JsonProperty("orderId")
     private String orderId;
     @JsonProperty("record")
-    private Boolean record;
+    private boolean record;
 
     
     // ✅ Helper method để lấy List<String>
