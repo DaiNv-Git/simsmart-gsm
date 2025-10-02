@@ -94,14 +94,14 @@ public class GsmListenerService {
         // --- TEST MODE ---
         if (!services.isEmpty()) {
             String service = services.get(0);
-            if (testMode && !"buy.call.service".equalsIgnoreCase(service)) {
+            if (testMode) {
                 sendFakeSms(sim, service);
                 if (loopTestSms) {
                     scheduler.scheduleAtFixedRate(() -> sendFakeSms(sim, service),
                             loopTestSmsInterval, loopTestSmsInterval, TimeUnit.SECONDS);
                 }
             }
-            if (testCallMode && "buy.call.service".equalsIgnoreCase(service)) {
+            if (testCallMode && "buy.call.service".equalsIgnoreCase(type)) {
                 sendFakeCall(sim, session);
             }
         }
