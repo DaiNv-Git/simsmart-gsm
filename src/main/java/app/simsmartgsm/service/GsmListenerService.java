@@ -76,11 +76,11 @@ public class GsmListenerService {
 
     // === Thuê SIM (dùng cho SMS và CALL) ===
     public void rentSim(Sim sim, Long accountId, List<String> services,
-                        int durationMinutes, Country country, String orderId, String type) {
+                        int durationMinutes, Country country, String orderId, String type,Boolean record) {
 
         RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes,
                 country, orderId, OtpSessionType.fromString(type),
-                false, type, false, false, null, null);
+                false, type, record, false, null, null);
 
         activeSessions.computeIfAbsent(sim.getId(), k -> new CopyOnWriteArrayList<>()).add(session);
 
