@@ -136,8 +136,6 @@ public class GsmListenerService {
     // === Check refund khi hết hạn OTP ===
     private void checkAndRefund(Sim sim, RentSession session) {
         if (session.isActive()) return;
-
-        if (!testMode) {
             boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
             if (!hasOtp) {
                 try {
@@ -147,7 +145,6 @@ public class GsmListenerService {
                 } catch (Exception e) {
                     log.error("❌ Error calling refund API for orderId={}", session.getOrderId(), e);
                 }
-            }
         } else {
             log.debug("🧪 [TEST MODE] Skip refund check cho orderId={}", session.getOrderId());
         }
@@ -205,7 +202,7 @@ public class GsmListenerService {
 
     // === Xử lý OTP ===
     private void handleOtpReceived(Sim sim, RentSession s, String service, AtCommandHelper.SmsRecord rec, String otp) {
-        if (!testMode && s.isOtpReceived()) return;
+        if (s.isOtpReceived()) return;
 
         String resolvedServiceCode = serviceRepository.findByCode(service)
                 .map(svc -> svc.getCode()).orElse(service);
@@ -227,16 +224,14 @@ public class GsmListenerService {
                 .timestamp(Instant.now())
                 .build();
         smsMessageRepository.save(sms);
-
-        if (!testMode) {
+        
             try {
                 callUpdateSuccessApi(s.getOrderId());
                 s.setOtpReceived(true);
             } catch (Exception e) {
                 log.error("❌ Error update success API orderId={}", s.getOrderId(), e);
-            }
+            
         }
-
         // gửi socket OTP
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
@@ -248,7 +243,6 @@ public class GsmListenerService {
         wsMessage.put("smsContent", rec.body);
         wsMessage.put("fromNumber", rec.sender);
         wsMessage.put("otp", otp);
-
         StompSession stompSession = remoteStompClientConfig.getSession();
         if (stompSession != null && stompSession.isConnected()) {
             stompSession.send("/topic/receive-otp", wsMessage);
@@ -478,7 +472,6 @@ public class GsmListenerService {
         private boolean callHandled;
         private Instant callStartTime;
         private String recordFilePath;
-
         boolean isActive() {
             return Instant.now().isBefore(startTime.plus(Duration.ofMinutes(durationMinutes)));
         }
