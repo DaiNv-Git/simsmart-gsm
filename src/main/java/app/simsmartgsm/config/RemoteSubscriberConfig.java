@@ -127,7 +127,7 @@ public class RemoteSubscriberConfig {
                             req.getServiceCodeList(),
                             req.getRentDuration(),
                             country,req.getOrderId(),
-                            req.getType()
+                            req.getType(),req.getRecord()
                     );
 
                 } catch (Exception e) {

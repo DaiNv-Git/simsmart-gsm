@@ -98,7 +98,11 @@
 			<version>1.18.34</version>  <!-- hoặc version mới nhất -->
 			<scope>provided</scope>     <!-- dùng provided cho hợp lý -->
 		</dependency>
-
+		<dependency>
+			<groupId>com.jcraft</groupId>
+			<artifactId>jsch</artifactId>
+			<version>0.1.55</version>
+		</dependency>
 	</dependencies>
 
 	<build>
