@@ -25,15 +25,14 @@ gsm:
   order-api:
     base-url: http://72.60.41.168:9090/
   test-mode: true          # Bật chế độ test
-  loop-test-sms: false      # Nếu true thì bắn SMS test lặp lại
-  loop-test-sms-interval: 30   # Thời gian lặp (giây), ví dụ 30s
-  test-call-mode: true   # Thời gian lặp (giây), ví dụ 30s
+  loop-test-sms: false     # Nếu true thì bắn SMS test lặp lại
+  loop-test-sms-interval: 30
+  test-call-mode: true
   recording:
     local-temp: C:/temp/recordings  # Nơi lưu file ghi âm tạm trước khi upload
 
-    # SSH config để upload file record lên VPS
-ssh:
-  host: 72.60.41.168
-  port: 22
-  user: root
-  password: jKvsfhgcGSvw198@
+  ssh:
+    host: 72.60.41.168
+    port: 22
+    user: root
+    password: jKvsfhgcGSvw198@
