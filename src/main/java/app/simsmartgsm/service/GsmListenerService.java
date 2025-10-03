@@ -37,10 +37,10 @@ public class GsmListenerService {
     private final RemoteStompClientConfig remoteStompClientConfig;
     private final SmsMessageRepository smsMessageRepository;
     private final ServiceRepository serviceRepository;
+    private final CallRecordService callRecordService;   // ✅ dùng service thay vì repo trực tiếp
 
     private final Map<String, PortWorker> workers = new ConcurrentHashMap<>();
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
-
     private final RestTemplate restTemplate = new RestTemplate();
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
 
@@ -242,9 +242,36 @@ public class GsmListenerService {
                     }
                 }
 
+                // === Lưu CallRecord vào DB ===
+                callRecordService.saveCallRecord(
+                        session.getOrderId(),
+                        session.getAccountId(),
+                        sim,
+                        fromNumber,
+                        "RECEIVED",
+                        remoteRecordPath,
+                        session.getCallStartTime(),
+                        Instant.now(), // callEndTime
+                        session.getStartTime().plus(Duration.ofMinutes(session.getDurationMinutes())) // expireAt
+                );
+
                 forwardCallResult(sim, session, fromNumber, "RECEIVED", remoteRecordPath);
+
             } catch (Exception e) {
                 log.error("❌ Error khi kết thúc call: {}", e.getMessage(), e);
+
+                callRecordService.saveCallRecord(
+                        session.getOrderId(),
+                        session.getAccountId(),
+                        sim,
+                        fromNumber,
+                        "ERROR",
+                        null,
+                        session.getCallStartTime(),
+                        Instant.now(),
+                        session.getStartTime().plus(Duration.ofMinutes(session.getDurationMinutes()))
+                );
+
                 forwardCallResult(sim, session, fromNumber, "ERROR", null);
             } finally {
                 closeSession(sim, session);
@@ -374,6 +401,7 @@ public class GsmListenerService {
         StompSession stompSession = remoteStompClientConfig.getSession();
         if (stompSession != null && stompSession.isConnected()) {
             stompSession.send("/topic/receive-call", wsMessage);
+            log.info("📡 Sent WS /topic/receive-call: {}", wsMessage);
         }
     }
 
@@ -446,7 +474,6 @@ public class GsmListenerService {
 
     // === Đóng session sau khi call kết thúc ===
     private void closeSession(Sim sim, RentSession session) {
-        // Xóa session đã xử lý ra khỏi danh sách active
         List<RentSession> sessions = activeSessions.get(sim.getId());
         if (sessions != null) {
             sessions.remove(session);
@@ -454,12 +481,10 @@ public class GsmListenerService {
                 activeSessions.remove(sim.getId());
             }
         }
-
-        // Nếu không còn session nào active thì dừng worker
         stopWorkerIfNoActiveSession(sim);
-
         log.info("✅ Closed session for orderId={} on SIM={}", session.getOrderId(), sim.getPhoneNumber());
     }
+
     // === Lấy danh sách session còn hiệu lực theo SIM ===
     public List<RentSession> getActiveSessions(String simId) {
         return activeSessions.getOrDefault(simId, List.of());
