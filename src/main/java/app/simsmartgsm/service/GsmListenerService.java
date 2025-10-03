@@ -169,8 +169,11 @@ public class GsmListenerService {
     // === OTP received ===
     private void handleOtpReceived(Sim sim, RentSession s, String service,
                                    AtCommandHelper.SmsRecord rec, String otp) {
-        if (s.isOtpReceived()) return;
 
+        // ✅ Xác định loại dịch vụ
+        boolean isBuyOtp = "buy.otp.service".equalsIgnoreCase(s.getServiceType());
+
+        // ✅ Luôn lưu SMS vào DB
         String resolvedServiceCode = serviceRepository.findByCode(service)
                 .map(svc -> svc.getCode()).orElse(service);
 
@@ -192,14 +195,34 @@ public class GsmListenerService {
                 .build();
         smsMessageRepository.save(sms);
 
-        try {
-            callUpdateSuccessApi(s.getOrderId());
-            s.setOtpReceived(true);
-        } catch (Exception e) {
-            log.error("❌ Error update success API orderId={}", s.getOrderId(), e);
+        log.info("💾 Saved OTP orderId={} sim={} otp={} serviceType={}",
+                s.getOrderId(), sim.getPhoneNumber(), otp, s.getServiceType());
+
+        // ✅ buy.otp.service → chỉ notify 1 lần và kết thúc
+        if (isBuyOtp) {
+            if (!s.isOtpReceived()) {
+                try {
+                    callUpdateSuccessApi(s.getOrderId());
+                    s.setOtpReceived(true);
+                    // Kết thúc session ngay sau khi nhận OTP đầu tiên
+                    closeSession(sim, s);
+                } catch (Exception e) {
+                    log.error("❌ Error update success API orderId={}", s.getOrderId(), e);
+                }
+            }
+        } else {
+            // ✅ rent.otp.service → có thể lưu nhiều lần, chỉ notify success lần đầu
+            if (!s.isOtpReceived()) {
+                try {
+                    callUpdateSuccessApi(s.getOrderId());
+                    s.setOtpReceived(true);
+                } catch (Exception e) {
+                    log.error("❌ Error update success API orderId={}", s.getOrderId(), e);
+                }
+            }
         }
 
-        // Push qua WS
+        // ✅ Đẩy WS cho mọi OTP
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
@@ -216,6 +239,7 @@ public class GsmListenerService {
             stompSession.send("/topic/receive-otp", wsMessage);
         }
     }
+
 
     // === Process Call ===
     public void processIncomingCall(Sim sim, String fromNumber, RentSession session) {
