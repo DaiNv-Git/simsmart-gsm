@@ -460,6 +460,10 @@ public class GsmListenerService {
 
         log.info("✅ Closed session for orderId={} on SIM={}", session.getOrderId(), sim.getPhoneNumber());
     }
+    // === Lấy danh sách session còn hiệu lực theo SIM ===
+    public List<RentSession> getActiveSessions(String simId) {
+        return activeSessions.getOrDefault(simId, List.of());
+    }
 
     // === RentSession ===
     @Data
