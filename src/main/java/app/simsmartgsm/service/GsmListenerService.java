@@ -121,8 +121,7 @@ public class GsmListenerService {
         }).start();
     }
 
-    // === Process SMS (OTP hoặc bất kỳ) ===
-    // === Process SMS (OTP hoặc bất kỳ) ===
+    // === Process SMS (OTP hoặc Marketing) ===
     public void processSms(Sim sim, AtCommandHelper.SmsRecord rec) {
         String smsNorm = normalize(rec.body);
         String otp = extractOtp(rec.body);
@@ -168,49 +167,38 @@ public class GsmListenerService {
         // 3) Nếu có session OTP và có OTP → xử lý OTP
         if (matchedSession != null && otp != null) {
             handleOtpReceived(sim, matchedSession, rec, otp, resolvedServiceCode);
+            return; // OTP xử lý xong thì không cần push chat nữa
         }
 
-        // 4) Push chat chỉ khi SMS thuộc session hoặc campaign
-        Map<String, Object> chat = new HashMap<>();
-        chat.put("phoneNumber", sim.getPhoneNumber());  // đích (SIM)
-        chat.put("fromNumber", rec.sender);             // nguồn (KH)
-        chat.put("content", rec.body);
-
-        boolean shouldPush = false;
-
-        // Nếu match session OTP
-        if (matchedSession != null) {
-            chat.put("campaignId", matchedSession.getOrderId());
-            chat.put("sessionId", matchedSession.getAccountId());
-            shouldPush = true;
-        }
-
-        // Nếu match campaign 2 chiều
+        // 4) Nếu campaign 2 chiều → phải đúng KH mới push
         MarketingSessionRegistry.TwoWaySession mkt = marketingRegistry.lookup(sim.getPhoneNumber(), rec.sender);
-        if (mkt != null) {
+
+        if (mkt != null && rec.sender.equals(mkt.getCustomerNumber())) {
+            Map<String, Object> chat = new HashMap<>();
+            chat.put("phoneNumber", sim.getPhoneNumber());   // số SIM
+            chat.put("fromNumber", rec.sender);              // KH trả lời
+            chat.put("content", rec.body);
             chat.put("campaignId", mkt.getCampaignId());
             chat.put("sessionId",  mkt.getSessionId());
-            shouldPush = true;
-        }
 
-        if (shouldPush) {
             StompSession stompSession = remoteStompClientConfig.getSession();
             if (stompSession != null && stompSession.isConnected()) {
                 stompSession.send("/topic/chat/phone", chat);
-                log.info("📡 Sent WS /topic/chat/phone: {}", chat);
+                log.info("📡 Sent WS /topic/chat/phone (2-way): {}", chat);
             }
         } else {
-            log.info("🚫 Bỏ qua SMS không thuộc session/campaign: {} từ {}", rec.body, rec.sender);
+            log.info("🚫 Bỏ qua SMS không thuộc session OTP hoặc campaign hợp lệ: {} từ {}", rec.body, rec.sender);
         }
     }
 
-    private void handleOtpReceived(Sim sim, RentSession s, AtCommandHelper.SmsRecord rec, String otp, String resolvedServiceCode) {
+    private void handleOtpReceived(Sim sim, RentSession s, AtCommandHelper.SmsRecord rec,
+                                   String otp, String resolvedServiceCode) {
         boolean isBuyOtp = "buy.otp.service".equalsIgnoreCase(s.getServiceType());
 
         log.info("💾 OTP matched orderId={} sim={} otp={} serviceType={}",
                 s.getOrderId(), sim.getPhoneNumber(), otp, s.getServiceType());
 
-        // notify success (chỉ 1 lần cho session)
+        // 1) Notify success API (chỉ 1 lần cho session)
         if (!s.isOtpReceived()) {
             try {
                 callUpdateSuccessApi(s.getOrderId());
@@ -221,7 +209,7 @@ public class GsmListenerService {
             }
         }
 
-        // push OTP về socket cho UI
+        // 2) Push OTP về socket cho UI
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
@@ -235,13 +223,17 @@ public class GsmListenerService {
 
         StompSession stompSession = remoteStompClientConfig.getSession();
         if (stompSession != null && stompSession.isConnected()) {
-            stompSession.send("/topic/receive-otp", wsMessage);
-            log.info("📡 Sent WS /topic/receive-otp: {}", wsMessage);
+            try {
+                stompSession.send("/topic/receive-otp", wsMessage);
+                log.info("📡 Sent WS /topic/receive-otp: {}", wsMessage);
+            } catch (Exception e) {
+                log.error("❌ Lỗi khi push WS OTP cho orderId={}: {}", s.getOrderId(), e.getMessage(), e);
+            }
         } else {
             log.warn("⚠️ Không thể gửi WS OTP vì stompSession null hoặc chưa connect");
         }
 
-        // Nếu là buy.otp.service thì chờ push xong mới đóng session
+        // 3) Nếu là buy.otp.service → chờ push xong rồi mới đóng session
         if (isBuyOtp) {
             log.info("⌛ Sẽ đóng session buy.otp.service sau 2s (orderId={})", s.getOrderId());
             scheduler.schedule(() -> {

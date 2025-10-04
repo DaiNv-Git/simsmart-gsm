@@ -19,8 +19,8 @@ public class MarketingSessionRegistry {
     @Data
     @AllArgsConstructor
     public static class TwoWaySession {
-        private String simPhone;        // Số SIM đang gửi/nhận
-        private String customerPhone;   // Số khách hàng
+        private String simPhone;        // số SIM thuê
+        private String customerNumber;  // số KH nhận tin nhắn gốc
         private String campaignId;
         private String sessionId;
         private Instant expiresAt;
