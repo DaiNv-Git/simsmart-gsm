@@ -7,6 +7,7 @@ import app.simsmartgsm.entity.SmsMessage;
 import app.simsmartgsm.repository.ServiceRepository;
 import app.simsmartgsm.repository.SmsMessageRepository;
 import app.simsmartgsm.uitils.AtCommandHelper;
+import app.simsmartgsm.uitils.MarketingSessionRegistry;
 import app.simsmartgsm.uitils.OtpSessionType;
 import app.simsmartgsm.uitils.PortWorker;
 import com.jcraft.jsch.*;
@@ -19,7 +20,10 @@ import org.springframework.messaging.simp.stomp.StompSession;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.time.Duration;
@@ -37,70 +41,54 @@ public class GsmListenerService {
     private final RemoteStompClientConfig remoteStompClientConfig;
     private final SmsMessageRepository smsMessageRepository;
     private final ServiceRepository serviceRepository;
-    private final CallRecordService callRecordService;   // ✅ dùng service thay vì repo trực tiếp
+    private final CallRecordService callRecordService;
+    private final MarketingSessionRegistry marketingRegistry;
 
     private final Map<String, PortWorker> workers = new ConcurrentHashMap<>();
     private final Map<String, List<RentSession>> activeSessions = new ConcurrentHashMap<>();
     private final RestTemplate restTemplate = new RestTemplate();
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
 
-    @Value("${gsm.test-mode:false}")
-    private boolean testMode;
-
-    @Value("${gsm.test-call-mode:false}")
-    private boolean testCallMode;
-
-    @Value("${gsm.loop-test-sms:false}")
-    private boolean loopTestSms;
-
-    @Value("${gsm.loop-test-sms-interval:30}")
-    private int loopTestSmsInterval;
-
-    @Value("${gsm.order-api.base-url}")
-    private String orderApiBaseUrl;
+    @Value("${gsm.test-mode:false}") private boolean testMode;
+    @Value("${gsm.test-call-mode:false}") private boolean testCallMode;
+    @Value("${gsm.loop-test-sms:false}") private boolean loopTestSms;
+    @Value("${gsm.loop-test-sms-interval:30}") private int loopTestSmsInterval;
+    @Value("${gsm.order-api.base-url}") private String orderApiBaseUrl;
 
     // SSH config
-    @Value("${gsm.ssh.host}")
-    private String sshHost;
-    @Value("${gsm.ssh.port:22}")
-    private int sshPort;
-    @Value("${gsm.ssh.user}")
-    private String sshUser;
-    @Value("${gsm.ssh.password:}")
-    private String sshPassword;
-    @Value("${gsm.ssh.key-path:}")
-    private String sshKeyPath;
-    @Value("${gsm.ssh.key-passphrase:}")
-    private String sshKeyPassphrase;
+    @Value("${gsm.ssh.host}") private String sshHost;
+    @Value("${gsm.ssh.port:22}") private int sshPort;
+    @Value("${gsm.ssh.user}") private String sshUser;
+    @Value("${gsm.ssh.password:}") private String sshPassword;
+    @Value("${gsm.ssh.key-path:}") private String sshKeyPath;
+    @Value("${gsm.ssh.key-passphrase:}") private String sshKeyPassphrase;
 
-    @Value("${gsm.recording.local-temp:/tmp/recordings}")
-    private String localRecordingDir;
+    @Value("${gsm.recording.local-temp:/tmp/recordings}") private String localRecordingDir;
 
     // === Rent SIM (SMS + CALL) ===
     public void rentSim(Sim sim, Long accountId, List<String> services,
                         int durationMinutes, Country country, String orderId, String type, Boolean record) {
 
-        RentSession session = new RentSession(accountId, services, Instant.now(), durationMinutes,
+        RentSession session = new RentSession(
+                accountId, services, Instant.now(), durationMinutes,
                 country, orderId, OtpSessionType.fromString(type),
-                false, type, record, false, null, null);
+                false, type, record != null && record, false, null, null
+        );
 
         activeSessions.computeIfAbsent(sim.getId(), k -> new CopyOnWriteArrayList<>()).add(session);
-
         log.info("➕ Rent SIM {} by acc={} services={} duration={}m",
                 sim.getPhoneNumber(), accountId, services, durationMinutes);
 
         startWorkerForSim(sim);
-
-        // Schedule auto refund khi hết hạn
         scheduler.schedule(() -> checkAndRefund(sim, session), durationMinutes, TimeUnit.MINUTES);
 
-        // --- TEST MODE ---
+        // test
         if (!services.isEmpty()) {
-            String service = services.get(0);
+            String svc = services.get(0);
             if (testMode) {
-                sendFakeSms(sim, service);
+                sendFakeSms(sim, svc);
                 if (loopTestSms) {
-                    scheduler.scheduleAtFixedRate(() -> sendFakeSms(sim, service),
+                    scheduler.scheduleAtFixedRate(() -> sendFakeSms(sim, svc),
                             loopTestSmsInterval, loopTestSmsInterval, TimeUnit.SECONDS);
                 }
             }
@@ -113,12 +101,9 @@ public class GsmListenerService {
     // === Fake SMS ===
     private void sendFakeSms(Sim sim, String service) {
         String otp = generateOtp();
-        String fakeSms = service.toUpperCase() + " OTP " + otp;
-
         AtCommandHelper.SmsRecord rec = new AtCommandHelper.SmsRecord();
         rec.sender = "TEST-SENDER";
-        rec.body = fakeSms;
-
+        rec.body = service.toUpperCase() + " OTP " + otp;
         log.info("📩 [TEST MODE] Fake incoming SMS: {}", rec.body);
         processSms(sim, rec);
     }
@@ -127,7 +112,7 @@ public class GsmListenerService {
     private void sendFakeCall(Sim sim, RentSession session) {
         new Thread(() -> {
             try {
-                Thread.sleep(2000);
+                Thread.sleep(1500);
                 log.info("📞 [TEST CALL MODE] Fake incoming call tới {}", sim.getPhoneNumber());
                 processIncomingCall(sim, "FAKE-NUMBER", session);
             } catch (Exception e) {
@@ -136,93 +121,92 @@ public class GsmListenerService {
         }).start();
     }
 
-    // === Process SMS (OTP) ===
+    // === Process SMS (OTP hoặc bất kỳ) ===
     public void processSms(Sim sim, AtCommandHelper.SmsRecord rec) {
-        List<RentSession> sessions = new ArrayList<>(activeSessions.getOrDefault(sim.getId(), List.of()));
-        if (sessions.isEmpty()) return;
-
         String smsNorm = normalize(rec.body);
         String otp = extractOtp(rec.body);
-        if (otp == null) return;
 
-        boolean matched = false;
+        // 1) Dò session OTP nếu có
+        RentSession matchedSession = null;
+        String resolvedServiceCode = "UNKNOWN";
+        List<RentSession> sessions = new ArrayList<>(activeSessions.getOrDefault(sim.getId(), List.of()));
+
         for (RentSession s : sessions) {
             if (!s.isActive()) continue;
             for (String service : s.getServices()) {
                 String serviceNorm = normalize(service);
                 String servicePrefix = serviceNorm.substring(0, Math.min(4, serviceNorm.length()));
                 if (smsNorm.startsWith(servicePrefix)) {
-                    handleOtpReceived(sim, s, service, rec, otp);
-                    matched = true;
+                    matchedSession = s;
+                    resolvedServiceCode = serviceRepository.findByCode(service).map(v -> v.getCode()).orElse(service);
+                    break;
                 }
             }
+            if (matchedSession != null) break;
         }
-        if (!matched) {
-            RentSession first = sessions.stream().filter(RentSession::isActive).findFirst().orElse(null);
-            if (first != null) {
-                handleOtpReceived(sim, first,
-                        first.getServices().isEmpty() ? "UNKNOWN" : first.getServices().get(0), rec, otp);
-            }
+
+        // 2) Luôn lưu INBOX (một lần)
+        SmsMessage sms = new SmsMessage();
+        sms.setOrderId(matchedSession != null ? matchedSession.getOrderId() : null);
+        sms.setAccountId(matchedSession != null ? matchedSession.getAccountId() : null);
+        sms.setDurationMinutes(matchedSession != null ? matchedSession.getDurationMinutes() : 0);
+        sms.setDeviceName(sim.getDeviceName());
+        sms.setComPort(sim.getComName());
+        sms.setSimPhone(sim.getPhoneNumber());
+        sms.setServiceCode(resolvedServiceCode);
+        sms.setFromNumber(rec.sender);
+        sms.setToNumber(sim.getPhoneNumber());
+        sms.setContent(rec.body);
+        sms.setModemResponse("OK");
+        sms.setType("INBOX");
+        sms.setServiceType(matchedSession != null ? matchedSession.getServiceType() : "UNKNOWN");
+        sms.setTimestamp(Instant.now());
+        smsMessageRepository.save(sms);
+        log.info("💾 Saved SMS INBOX to DB: {}", sms.getId());
+
+        // 3) Nếu match OTP session → xử lý OTP (update API, close session nếu buy.otp.service)
+        if (matchedSession != null && otp != null) {
+            handleOtpReceived(sim, matchedSession, rec, otp, resolvedServiceCode);
+        }
+
+        // 4) Push chat cho tất cả SMS đến
+        Map<String, Object> chat = new HashMap<>();
+        chat.put("phoneNumber", sim.getPhoneNumber());  // đích (SIM)
+        chat.put("fromNumber", rec.sender);             // nguồn (KH)
+        chat.put("content", rec.body);
+
+        MarketingSessionRegistry.TwoWaySession mkt = marketingRegistry.lookup(sim.getPhoneNumber(), rec.sender);
+        if (mkt != null) {
+            chat.put("campaignId", mkt.getCampaignId());
+            chat.put("sessionId",  mkt.getSessionId());
+        } else {
+            chat.put("campaignId", null);
+            chat.put("sessionId",  null);
+        }
+
+        StompSession stompSession = remoteStompClientConfig.getSession();
+        if (stompSession != null && stompSession.isConnected()) {
+            stompSession.send("/topic/chat/phone", chat);
+            log.info("📡 Sent WS /topic/chat/phone: {}", chat);
         }
     }
 
-    // === OTP received ===
-    private void handleOtpReceived(Sim sim, RentSession s, String service,
-                                   AtCommandHelper.SmsRecord rec, String otp) {
-
-        // ✅ Xác định loại dịch vụ
+    private void handleOtpReceived(Sim sim, RentSession s, AtCommandHelper.SmsRecord rec, String otp, String resolvedServiceCode) {
         boolean isBuyOtp = "buy.otp.service".equalsIgnoreCase(s.getServiceType());
 
-        // ✅ Luôn lưu SMS vào DB
-        String resolvedServiceCode = serviceRepository.findByCode(service)
-                .map(svc -> svc.getCode()).orElse(service);
+        log.info("💾 OTP matched orderId={} sim={} otp={} serviceType={}", s.getOrderId(), sim.getPhoneNumber(), otp, s.getServiceType());
 
-        SmsMessage sms = SmsMessage.builder()
-                .orderId(s.getOrderId())
-                .accountId(s.getAccountId())
-                .durationMinutes(s.getDurationMinutes())
-                .deviceName(sim.getDeviceName())
-                .comPort(sim.getComName())
-                .simPhone(sim.getPhoneNumber())
-                .serviceCode(resolvedServiceCode)
-                .fromNumber(rec.sender)
-                .toNumber(sim.getPhoneNumber())
-                .content(rec.body)
-                .modemResponse("OK")
-                .type("INBOX")
-                .serviceType(s.getServiceType())
-                .timestamp(Instant.now())
-                .build();
-        smsMessageRepository.save(sms);
-
-        log.info("💾 Saved OTP orderId={} sim={} otp={} serviceType={}",
-                s.getOrderId(), sim.getPhoneNumber(), otp, s.getServiceType());
-
-        // ✅ buy.otp.service → chỉ notify 1 lần và kết thúc
-        if (isBuyOtp) {
-            if (!s.isOtpReceived()) {
-                try {
-                    callUpdateSuccessApi(s.getOrderId());
-                    s.setOtpReceived(true);
-                    // Kết thúc session ngay sau khi nhận OTP đầu tiên
-                    closeSession(sim, s);
-                } catch (Exception e) {
-                    log.error("❌ Error update success API orderId={}", s.getOrderId(), e);
-                }
-            }
-        } else {
-            // ✅ rent.otp.service → có thể lưu nhiều lần, chỉ notify success lần đầu
-            if (!s.isOtpReceived()) {
-                try {
-                    callUpdateSuccessApi(s.getOrderId());
-                    s.setOtpReceived(true);
-                } catch (Exception e) {
-                    log.error("❌ Error update success API orderId={}", s.getOrderId(), e);
-                }
+        // notify success (chỉ 1 lần cho session)
+        if (!s.isOtpReceived()) {
+            try {
+                callUpdateSuccessApi(s.getOrderId());
+                s.setOtpReceived(true);
+            } catch (Exception e) {
+                log.error("❌ Error update success API orderId={}", s.getOrderId(), e);
             }
         }
 
-        // ✅ Đẩy WS cho mọi OTP
+        // push OTP về socket cho UI (nếu bạn vẫn cần)
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
@@ -238,10 +222,14 @@ public class GsmListenerService {
         if (stompSession != null && stompSession.isConnected()) {
             stompSession.send("/topic/receive-otp", wsMessage);
         }
+
+        if (isBuyOtp) {
+            // kết thúc session ngay với buy.otp.service
+            closeSession(sim, s);
+        }
     }
 
-
-    // === Process Call ===
+    // === Process Call === (giữ nguyên logic cũ)
     public void processIncomingCall(Sim sim, String fromNumber, RentSession session) {
         if (!session.isActive() || session.isCallHandled()) return;
 
@@ -266,36 +254,20 @@ public class GsmListenerService {
                     }
                 }
 
-                // === Lưu CallRecord vào DB ===
                 callRecordService.saveCallRecord(
-                        session.getOrderId(),
-                        session.getAccountId(),
-                        sim,
-                        fromNumber,
-                        "RECEIVED",
-                        remoteRecordPath,
-                        session.getCallStartTime(),
-                        Instant.now(), // callEndTime
-                        session.getStartTime().plus(Duration.ofMinutes(session.getDurationMinutes())) // expireAt
+                        session.getOrderId(), session.getAccountId(), sim, fromNumber,
+                        "RECEIVED", remoteRecordPath, session.getCallStartTime(),
+                        Instant.now(), session.getStartTime().plus(Duration.ofMinutes(session.getDurationMinutes()))
                 );
-
                 forwardCallResult(sim, session, fromNumber, "RECEIVED", remoteRecordPath);
 
             } catch (Exception e) {
                 log.error("❌ Error khi kết thúc call: {}", e.getMessage(), e);
-
                 callRecordService.saveCallRecord(
-                        session.getOrderId(),
-                        session.getAccountId(),
-                        sim,
-                        fromNumber,
-                        "ERROR",
-                        null,
-                        session.getCallStartTime(),
-                        Instant.now(),
-                        session.getStartTime().plus(Duration.ofMinutes(session.getDurationMinutes()))
+                        session.getOrderId(), session.getAccountId(), sim, fromNumber,
+                        "ERROR", null, session.getCallStartTime(),
+                        Instant.now(), session.getStartTime().plus(Duration.ofMinutes(session.getDurationMinutes()))
                 );
-
                 forwardCallResult(sim, session, fromNumber, "ERROR", null);
             } finally {
                 closeSession(sim, session);
@@ -303,27 +275,20 @@ public class GsmListenerService {
         }, 20, TimeUnit.SECONDS);
     }
 
-    // === Save Recording ===
     private String saveCallRecording(Sim sim, RentSession session, String fromNumber) throws Exception {
         String baseDir = (localRecordingDir != null && !localRecordingDir.isBlank())
-                ? localRecordingDir
-                : System.getProperty("java.io.tmpdir");
+                ? localRecordingDir : System.getProperty("java.io.tmpdir");
 
         Files.createDirectories(Paths.get(baseDir));
-
         String filename = session.getOrderId() + "-" + System.currentTimeMillis() + ".wav";
         String localPath = Paths.get(baseDir, filename).toString();
 
         createFakeWavFile(localPath, 2);
         log.info("💾 Created recording at local path: {}", localPath);
 
-        String remotePath = uploadFileToRemote(localPath, "/home/record");
-        log.info("📤 Uploaded recording to VPS {}:{}", sshHost, remotePath);
-
-        return remotePath;
+        return uploadFileToRemote(localPath, "/home/record");
     }
 
-    // === Upload File ===
     private String uploadFileToRemote(String localFilePath, String remoteDir) throws Exception {
         JSch jsch = new JSch();
         Session session = null;
@@ -337,9 +302,7 @@ public class GsmListenerService {
                 }
             }
             session = jsch.getSession(sshUser, sshHost, sshPort);
-            if (sshPassword != null && !sshPassword.isBlank()) {
-                session.setPassword(sshPassword);
-            }
+            if (sshPassword != null && !sshPassword.isBlank()) session.setPassword(sshPassword);
             Properties config = new Properties();
             config.put("StrictHostKeyChecking", "no");
             session.setConfig(config);
@@ -356,6 +319,7 @@ public class GsmListenerService {
             try (FileInputStream fis = new FileInputStream(local)) {
                 sftp.put(fis, remotePath);
             }
+            log.info("📤 Uploaded recording to VPS {}:{}", sshHost, remotePath);
             return remotePath;
         } finally {
             if (sftp != null && sftp.isConnected()) sftp.disconnect();
@@ -363,7 +327,6 @@ public class GsmListenerService {
         }
     }
 
-    // === Fake WAV file ===
     private void createFakeWavFile(String path, int durationSeconds) throws Exception {
         int sampleRate = 8000;
         short channels = 1;
@@ -396,20 +359,16 @@ public class GsmListenerService {
         }
     }
     private void writeInt(OutputStream os, int value) throws Exception {
-        os.write(value & 0xff);
-        os.write((value >> 8) & 0xff);
-        os.write((value >> 16) & 0xff);
-        os.write((value >> 24) & 0xff);
+        os.write(value & 0xff); os.write((value >> 8) & 0xff);
+        os.write((value >> 16) & 0xff); os.write((value >> 24) & 0xff);
     }
     private void writeShort(OutputStream os, short value) throws Exception {
-        os.write(value & 0xff);
-        os.write((value >> 8) & 0xff);
+        os.write(value & 0xff); os.write((value >> 8) & 0xff);
     }
     private void writeString(OutputStream os, String s) throws Exception {
         os.write(s.getBytes());
     }
 
-    // === Forward Call result ===
     private void forwardCallResult(Sim sim, RentSession s, String fromNumber, String status, String recordFile) {
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
@@ -429,10 +388,8 @@ public class GsmListenerService {
         }
     }
 
-    // === Refund check ===
     private void checkAndRefund(Sim sim, RentSession session) {
         if (session.isActive()) return;
-
         boolean hasOtp = smsMessageRepository.existsByOrderId(session.getOrderId());
         if (!hasOtp) {
             try {
@@ -446,7 +403,6 @@ public class GsmListenerService {
         stopWorkerIfNoActiveSession(sim);
     }
 
-    // === Call API update ===
     private void callUpdateSuccessApi(String orderId) {
         String url = orderApiBaseUrl + "api/otp/order/" + orderId + "/success";
         restTemplate.postForEntity(url, null, Void.class);
@@ -456,7 +412,6 @@ public class GsmListenerService {
         restTemplate.postForEntity(url, null, Void.class);
     }
 
-    // === Worker ===
     private void startWorkerForSim(Sim sim) {
         workers.computeIfAbsent(sim.getComName(), com -> {
             PortWorker worker = new PortWorker(sim, 4000, this);
@@ -476,15 +431,11 @@ public class GsmListenerService {
         }
     }
 
-    // === AT command ===
     private void sendAtCommand(Sim sim, String command) {
         PortWorker w = workers.get(sim.getComName());
-        if (w != null) {
-            w.sendCommand(command);
-        }
+        if (w != null) w.sendCommand(command);
     }
 
-    // === Utils ===
     private String normalize(String s) {
         return s == null ? "" : s.toLowerCase(Locale.ROOT).replaceAll("[_\\s]+", "");
     }
@@ -496,25 +447,20 @@ public class GsmListenerService {
         return String.valueOf(ThreadLocalRandom.current().nextInt(100000, 999999));
     }
 
-    // === Đóng session sau khi call kết thúc ===
     private void closeSession(Sim sim, RentSession session) {
         List<RentSession> sessions = activeSessions.get(sim.getId());
         if (sessions != null) {
             sessions.remove(session);
-            if (sessions.isEmpty()) {
-                activeSessions.remove(sim.getId());
-            }
+            if (sessions.isEmpty()) activeSessions.remove(sim.getId());
         }
         stopWorkerIfNoActiveSession(sim);
         log.info("✅ Closed session for orderId={} on SIM={}", session.getOrderId(), sim.getPhoneNumber());
     }
 
-    // === Lấy danh sách session còn hiệu lực theo SIM ===
     public List<RentSession> getActiveSessions(String simId) {
         return activeSessions.getOrDefault(simId, List.of());
     }
 
-    // === RentSession ===
     @Data
     @AllArgsConstructor
     public static class RentSession {

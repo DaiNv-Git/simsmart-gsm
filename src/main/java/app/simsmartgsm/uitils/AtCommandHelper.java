@@ -44,7 +44,6 @@ public class AtCommandHelper implements Closeable {
         return new AtCommandHelper(port, true);
     }
 
-
     // ---------- Ctor ----------
     public AtCommandHelper(SerialPort port) {
         this(port, false);
@@ -100,7 +99,7 @@ public class AtCommandHelper implements Closeable {
 
     public void writeCtrlZ() throws IOException {
         ensureOpen();
-        out.write(0x1A);
+        out.write(0x1A); // Ctrl+Z
         out.flush();
     }
 
@@ -189,7 +188,8 @@ public class AtCommandHelper implements Closeable {
                 "OK", "ERROR", "+CMGS");
 
         boolean ok = finalResp.contains("OK") || finalResp.contains("+CMGS");
-        log.warn("⚠Send success message : {}");
+        log.info("📩 Send SMS Resp: {}", finalResp);
+
         try {
             setNewMessageIndicationDefault();
         } catch (Exception e) {
@@ -199,12 +199,8 @@ public class AtCommandHelper implements Closeable {
         return ok;
     }
 
-    /** Xoá 1 SMS theo index trong bộ nhớ hiện tại (SM/ME). */
     public boolean deleteSms(int index) throws IOException, InterruptedException {
-        // Một số modem chấp nhận "AT+CMGD=<idx>", số khác cần "AT+CMGD=<idx>,0".
-        // Thử lần 1 (không delflag):
         if (sendAtOk("AT+CMGD=" + index, 2000)) return true;
-        // Thử lần 2 (delflag=0: delete message at location <index>):
         return sendAtOk("AT+CMGD=" + index + ",0", 2000);
     }
 
@@ -222,6 +218,40 @@ public class AtCommandHelper implements Closeable {
 
     public boolean deleteAllSms() throws IOException, InterruptedException {
         return sendAtOk("AT+CMGD=1,4", 3000);
+    }
+
+    // ---------- SIM Info ----------
+    public String getCcid() throws IOException, InterruptedException {
+        String r = sendAndRead("AT+CCID", 1500);
+        Matcher m = Pattern.compile("\\+?CCID\\s*:\\s*([0-9A-Fa-f]+)").matcher(r);
+        return m.find() ? m.group(1) : sanitizeSingleLine(r);
+    }
+
+    public String getImsi() throws IOException, InterruptedException {
+        String r = sendAndRead("AT+CIMI", 1500);
+        Matcher m = Pattern.compile("(?m)^(\\d{5,20})$").matcher(r);
+        return m.find() ? m.group(1) : r.replaceAll("[^0-9]", "");
+    }
+
+    public String getCnum() throws IOException, InterruptedException {
+        String r = sendAndRead("AT+CNUM", 1500);
+        Matcher m = Pattern.compile("\\+?CNUM:.*?\"(\\+?\\d{6,20})\"").matcher(r);
+        if (m.find()) return m.group(1);
+
+        m = Pattern.compile("\\+?CNUM:.*?(\\+?\\d{6,20})").matcher(r);
+        return m.find() ? m.group(1) : null;
+    }
+
+    public String queryOperator() throws IOException, InterruptedException {
+        String resp = sendAndRead("AT+COPS?", 2000);
+        Matcher m = Pattern.compile("\\+COPS:\\s*\\d+,\\d+,\"([^\"]+)\"").matcher(resp);
+        return m.find() ? m.group(1) : "UNKNOWN";
+    }
+
+    private static String sanitizeSingleLine(String s) {
+        if (s == null) return null;
+        String t = s.replaceAll("\\r|\\n|OK|ERROR", "").trim();
+        return t.isBlank() ? null : t;
     }
 
     // ---------- Parsers ----------
@@ -260,50 +290,7 @@ public class AtCommandHelper implements Closeable {
             try { port.closePort(); } catch (Exception ignored) {}
         }
     }
-    /** Lấy CCID (ICCID). */
-    public String getCcid() throws IOException, InterruptedException {
-        String r = sendAndRead("AT+CCID", 1500);
-        // ví dụ: +CCID: 8981100025977896009F
-        Matcher m = Pattern.compile("\\+?CCID\\s*:\\s*([0-9A-Fa-f]+)").matcher(r);
-        return m.find() ? m.group(1) : sanitizeSingleLine(r);
-    }
-    /**
-     * Làm sạch response 1 dòng (loại bỏ OK/ERROR và \r\n).
-     */
-    private static String sanitizeSingleLine(String s) {
-        if (s == null) return null;
-        String t = s.replaceAll("\\r|\\n|OK|ERROR", "").trim();
-        return t.isBlank() ? null : t;
-    }
 
-    /** Lấy IMSI (CIMI). */
-    public String getImsi() throws IOException, InterruptedException {
-        String r = sendAndRead("AT+CIMI", 1500);
-        Matcher m = Pattern.compile("(?m)^(\\d{5,20})$").matcher(r);
-        return m.find() ? m.group(1) : r.replaceAll("[^0-9]", "");
-    }
-
-    /** Lấy số điện thoại (nếu SIM lưu): AT+CNUM. */
-    public String getCnum() throws IOException, InterruptedException {
-        String r = sendAndRead("AT+CNUM", 1500);
-        // ví dụ: +CNUM: "","84901234567",145,7,0,4
-        Matcher m = Pattern.compile("\\+?CNUM:.*?\"(\\+?\\d{6,20})\"").matcher(r);
-        if (m.find()) return m.group(1);
-
-        // fallback: bắt chuỗi số dài trong dòng CNUM
-        m = Pattern.compile("\\+?CNUM:.*?(\\+?\\d{6,20})").matcher(r);
-        return m.find() ? m.group(1) : null;
-    }
-
-    public String queryOperator() throws IOException, InterruptedException {
-        String resp = sendAndRead("AT+COPS?", 2000);
-        // Ví dụ: +COPS: 0,0,"NTT DOCOMO NTT DOCOMO",7
-        Matcher m = Pattern.compile("\\+COPS:\\s*\\d+,\\d+,\"([^\"]+)\"").matcher(resp);
-        if (m.find()) {
-            return m.group(1); // Trả về NTT DOCOMO NTT DOCOMO
-        }
-        return "UNKNOWN";
-    }
     // ---------- DTO ----------
     public static class SmsRecord {
         public Integer index;
@@ -311,6 +298,7 @@ public class AtCommandHelper implements Closeable {
         public String sender;
         public String timestamp;
         public String body;
+
         @Override public String toString() {
             return "SmsRecord{" +
                     "index=" + index +

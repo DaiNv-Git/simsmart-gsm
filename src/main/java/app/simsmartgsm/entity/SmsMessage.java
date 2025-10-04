@@ -10,8 +10,8 @@ import java.time.Instant;
 @Getter
 @Setter
 @Builder
-@NoArgsConstructor
 @AllArgsConstructor
+@NoArgsConstructor(force = true) // nếu cần cho MongoDB
 @Document(collection = "sms_messages")
 public class SmsMessage {
     @Id
@@ -39,9 +39,11 @@ public class SmsMessage {
     private String fromNumber;
 
     /** Số nhận (Receiver / To) */
+    @NonNull
     private String toNumber;
 
     /** Nội dung SMS */
+    @NonNull
     private String content;
 
     /** Trả về từ modem (OK/ERROR/...) */
