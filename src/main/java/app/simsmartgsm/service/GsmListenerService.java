@@ -122,6 +122,7 @@ public class GsmListenerService {
     }
 
     // === Process SMS (OTP hoặc bất kỳ) ===
+    // === Process SMS (OTP hoặc bất kỳ) ===
     public void processSms(Sim sim, AtCommandHelper.SmsRecord rec) {
         String smsNorm = normalize(rec.body);
         String otp = extractOtp(rec.body);
@@ -145,7 +146,7 @@ public class GsmListenerService {
             if (matchedSession != null) break;
         }
 
-        // 2) Luôn lưu INBOX (một lần)
+        // 2) Luôn lưu INBOX vào DB
         SmsMessage sms = new SmsMessage();
         sms.setOrderId(matchedSession != null ? matchedSession.getOrderId() : null);
         sms.setAccountId(matchedSession != null ? matchedSession.getAccountId() : null);
@@ -164,30 +165,42 @@ public class GsmListenerService {
         smsMessageRepository.save(sms);
         log.info("💾 Saved SMS INBOX to DB: {}", sms.getId());
 
-        // 3) Nếu match OTP session → xử lý OTP (update API, close session nếu buy.otp.service)
+        // 3) Nếu có session OTP và có OTP → xử lý OTP
         if (matchedSession != null && otp != null) {
             handleOtpReceived(sim, matchedSession, rec, otp, resolvedServiceCode);
         }
 
-        // 4) Push chat cho tất cả SMS đến
+        // 4) Push chat chỉ khi SMS thuộc session hoặc campaign
         Map<String, Object> chat = new HashMap<>();
         chat.put("phoneNumber", sim.getPhoneNumber());  // đích (SIM)
         chat.put("fromNumber", rec.sender);             // nguồn (KH)
         chat.put("content", rec.body);
 
+        boolean shouldPush = false;
+
+        // Nếu match session OTP
+        if (matchedSession != null) {
+            chat.put("campaignId", matchedSession.getOrderId());
+            chat.put("sessionId", matchedSession.getAccountId());
+            shouldPush = true;
+        }
+
+        // Nếu match campaign 2 chiều
         MarketingSessionRegistry.TwoWaySession mkt = marketingRegistry.lookup(sim.getPhoneNumber(), rec.sender);
         if (mkt != null) {
             chat.put("campaignId", mkt.getCampaignId());
             chat.put("sessionId",  mkt.getSessionId());
-        } else {
-            chat.put("campaignId", null);
-            chat.put("sessionId",  null);
+            shouldPush = true;
         }
 
-        StompSession stompSession = remoteStompClientConfig.getSession();
-        if (stompSession != null && stompSession.isConnected()) {
-            stompSession.send("/topic/chat/phone", chat);
-            log.info("📡 Sent WS /topic/chat/phone: {}", chat);
+        if (shouldPush) {
+            StompSession stompSession = remoteStompClientConfig.getSession();
+            if (stompSession != null && stompSession.isConnected()) {
+                stompSession.send("/topic/chat/phone", chat);
+                log.info("📡 Sent WS /topic/chat/phone: {}", chat);
+            }
+        } else {
+            log.info("🚫 Bỏ qua SMS không thuộc session/campaign: {} từ {}", rec.body, rec.sender);
         }
     }
 
