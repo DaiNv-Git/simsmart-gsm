@@ -14,7 +14,9 @@ import org.springframework.web.socket.sockjs.client.WebSocketTransport;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 @Configuration
 @Slf4j
@@ -22,6 +24,7 @@ public class RemoteStompClientConfig {
 
     private static final String REMOTE_WS_URL = "ws://72.60.41.168:9090/ws";
     private final AtomicReference<StompSession> stompSessionRef = new AtomicReference<>();
+    private final List<Consumer<StompSession>> onConnectedCallbacks = new CopyOnWriteArrayList<>();
 
     @PostConstruct
     public void connectToRemoteBroker() {
@@ -72,6 +75,15 @@ public class RemoteStompClientConfig {
             }
         }).start();
     }
+    // Thêm field
+
+    public void addOnConnectedCallback(Consumer<StompSession> callback) {
+        onConnectedCallbacks.add(callback);
+    }
+
+    // Trong afterConnected:
+    
+
 
     /** ✅ service khác gọi để lấy session */
     public StompSession getSession() {

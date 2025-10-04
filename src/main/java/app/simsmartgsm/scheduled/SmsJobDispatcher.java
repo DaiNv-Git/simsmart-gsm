@@ -13,7 +13,6 @@ import org.springframework.messaging.simp.stomp.StompFrameHandler;
 import org.springframework.messaging.simp.stomp.StompHeaders;
 import org.springframework.messaging.simp.stomp.StompSession;
 import org.springframework.stereotype.Service;
-
 import jakarta.annotation.PostConstruct;
 import java.lang.reflect.Type;
 import java.net.InetAddress;
@@ -46,49 +45,49 @@ public class SmsJobDispatcher {
         }
         log.info("💻 Local deviceName: {}", localDeviceName);
 
-        new Thread(this::subscribeSmsJobs, "SmsJobSubscriber").start();
+        // 👉 Đăng ký callback để subscribe khi session sẵn sàng
+        stompClientConfig.addOnConnectedCallback(this::subscribeSmsJobs);
     }
 
-    private void subscribeSmsJobs() {
-        while (true) {
-            try {
-                StompSession session = stompClientConfig.getSession();
-                if (session != null && session.isConnected()) {
-                    session.subscribe("/topic/sms-job-topic", new StompFrameHandler() {
-                        @Override public Type getPayloadType(StompHeaders headers) { return byte[].class; }
-                        @Override public void handleFrame(StompHeaders headers, Object payload) {
-                            try {
-                                String body = new String((byte[]) payload);
-                                JSONObject job = new JSONObject(body);
-
-                                // Lọc theo deviceName
-                                if (!localDeviceName.equalsIgnoreCase(job.optString("deviceName"))) {
-                                    log.debug("🚫 Bỏ qua job không khớp deviceName");
-                                    return;
-                                }
-
-                                String comName = job.getString("comName");
-                                comQueues
-                                        .computeIfAbsent(comName, k -> {
-                                            BlockingQueue<JSONObject> q = new LinkedBlockingQueue<>();
-                                            startComWorker(comName, q, session);
-                                            return q;
-                                        })
-                                        .offer(job);
-
-                            } catch (Exception e) {
-                                log.error("❌ Lỗi khi parse job", e);
-                            }
-                        }
-                    });
-                    log.info("✅ Subscribed to /topic/sms-job-topic");
-                    break;
-                }
-                Thread.sleep(2000);
-            } catch (Exception e) {
-                log.error("❌ Lỗi subscribe SMS job", e);
+    /** Được gọi khi session đã connect thành công */
+    private void subscribeSmsJobs(StompSession session) {
+        session.subscribe("/topic/sms-job-topic", new StompFrameHandler() {
+            @Override
+            public Type getPayloadType(StompHeaders headers) {
+                return byte[].class;
             }
-        }
+
+            @Override
+            public void handleFrame(StompHeaders headers, Object payload) {
+                try {
+                    String body = (payload instanceof byte[]) ? new String((byte[]) payload) : payload.toString();
+                    log.info("📩 Raw message received: {}", body);
+
+                    JSONObject job = new JSONObject(body);
+
+                    // Lọc theo deviceName
+                    if (!localDeviceName.equalsIgnoreCase(job.optString("deviceName"))) {
+                        log.debug("🚫 Bỏ qua job không khớp deviceName (local={}, msg={})",
+                                localDeviceName, job.optString("deviceName"));
+                        return;
+                    }
+
+                    String comName = job.getString("comName");
+                    comQueues
+                            .computeIfAbsent(comName, k -> {
+                                BlockingQueue<JSONObject> q = new LinkedBlockingQueue<>();
+                                startComWorker(comName, q, session);
+                                return q;
+                            })
+                            .offer(job);
+
+                } catch (Exception e) {
+                    log.error("❌ Lỗi khi parse job", e);
+                }
+            }
+        });
+
+        log.info("✅ Subscribed to /topic/sms-job-topic");
     }
 
     /** Worker: mỗi COM có 1 thread riêng, serialize job theo cổng */
@@ -110,7 +109,6 @@ public class SmsJobDispatcher {
 
     /** Xử lý 1 job gửi SMS (ONE_WAY | TWO_WAY) + retry 3 lần */
     private void processSmsJob(JSONObject job, String comName, StompSession session) {
-        // common fields
         String localMsgId = job.optString("localMsgId", "");
         String simId      = job.optString("simId", "");
         String simPhone   = job.optString("simPhoneNumber", "");
@@ -119,8 +117,7 @@ public class SmsJobDispatcher {
         String campaignId = job.optString("campaignId", null);
         String sessionId  = job.optString("sessionId", null);
 
-        // marketing mode
-        String mode = job.optString("smsType", "ONE_WAY");            // ONE_WAY | TWO_WAY
+        String mode = job.optString("smsType", "ONE_WAY");
         int replyWindowMinutes = job.optInt("timeDuration", 0);
 
         JSONObject response = new JSONObject();
@@ -150,7 +147,6 @@ public class SmsJobDispatcher {
             response.put("status", "SENT");
             response.put("errorMsg", JSONObject.NULL);
 
-            // Nếu TWO_WAY → đăng ký phiên chờ phản hồi
             if ("TWO_WAY".equalsIgnoreCase(mode) && replyWindowMinutes > 0) {
                 Instant expiresAt = Instant.now().plus(replyWindowMinutes, ChronoUnit.MINUTES);
                 marketingRegistry.register(simPhone, toNumber, campaignId, sessionId, expiresAt);
@@ -162,11 +158,10 @@ public class SmsJobDispatcher {
             log.error("❌ Gửi SMS thất bại sau 3 lần COM {} → {}", comName, toNumber);
         }
 
-        // Push WS kết quả gửi
-        session.send("/app/sms-response", response.toString().getBytes());
-        log.info("📩 Kết quả gửi WS: {}", response);
+        // 👉 Đổi sang topic thay vì app
+        session.send("/topic/sms-response", response.toString().getBytes());
+        log.info("📩 Pushed result WS: {}", response);
 
-        // Lưu OUTBOX
         SmsMessage sms = new SmsMessage();
         sms.setOrderId(campaignId);
         sms.setDeviceName(localDeviceName);
@@ -187,19 +182,16 @@ public class SmsJobDispatcher {
     private boolean sendSmsViaCom(String comName, String phoneNumber, String content) {
         Boolean ok = portManager.withPort(comName, (AtCommandHelper helper) -> {
             try {
-                // B1: CMGS
                 String resp = helper.sendAndRead("AT+CMGS=\"" + phoneNumber + "\"", 2000);
                 if (resp == null || !resp.contains(">")) {
                     log.error("❌ Không nhận prompt '>' từ modem {}", comName);
                     return false;
                 }
 
-                // B2: nội dung + Ctrl+Z
                 helper.writeRaw(content.getBytes());
                 helper.writeCtrlZ();
 
-                // B3: chờ phản hồi cuối
-                String finalResp = helper.sendAndRead("", 5000); // đọc tiếp
+                String finalResp = helper.sendAndRead("", 5000);
                 log.info("📩 Resp từ {}: {}", comName, finalResp);
                 return finalResp != null && finalResp.contains("OK");
 
