@@ -389,7 +389,7 @@ public class GsmListenerService {
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
         wsMessage.put("comNumber", sim.getComName());
         wsMessage.put("customerId", s.getAccountId());
-        wsMessage.put("serviceCode", "CALL");
+        wsMessage.put("service", s.getServiceType()); // <-- lấy từ RentSession
         wsMessage.put("countryName", s.getCountry().getCountryCode());
         wsMessage.put("fromNumber", fromNumber);
         wsMessage.put("status", status);
@@ -401,6 +401,7 @@ public class GsmListenerService {
             log.info("📡 Sent WS /topic/receive-call: {}", wsMessage);
         }
     }
+
 
     private void checkAndRefund(Sim sim, RentSession session) {
         if (session.isActive()) return;
