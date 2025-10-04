@@ -389,7 +389,7 @@ public class GsmListenerService {
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
         wsMessage.put("comNumber", sim.getComName());
         wsMessage.put("customerId", s.getAccountId());
-        wsMessage.put("service", s.getServiceType()); // <-- lấy từ RentSession
+        wsMessage.put("service", s.getServices()); // <-- lấy từ RentSession
         wsMessage.put("countryName", s.getCountry().getCountryCode());
         wsMessage.put("fromNumber", fromNumber);
         wsMessage.put("status", status);
