@@ -207,19 +207,21 @@ public class GsmListenerService {
     private void handleOtpReceived(Sim sim, RentSession s, AtCommandHelper.SmsRecord rec, String otp, String resolvedServiceCode) {
         boolean isBuyOtp = "buy.otp.service".equalsIgnoreCase(s.getServiceType());
 
-        log.info("💾 OTP matched orderId={} sim={} otp={} serviceType={}", s.getOrderId(), sim.getPhoneNumber(), otp, s.getServiceType());
+        log.info("💾 OTP matched orderId={} sim={} otp={} serviceType={}",
+                s.getOrderId(), sim.getPhoneNumber(), otp, s.getServiceType());
 
         // notify success (chỉ 1 lần cho session)
         if (!s.isOtpReceived()) {
             try {
                 callUpdateSuccessApi(s.getOrderId());
                 s.setOtpReceived(true);
+                log.info("✅ Đã gọi success API cho orderId={}", s.getOrderId());
             } catch (Exception e) {
                 log.error("❌ Error update success API orderId={}", s.getOrderId(), e);
             }
         }
 
-        // push OTP về socket cho UI (nếu bạn vẫn cần)
+        // push OTP về socket cho UI
         Map<String, Object> wsMessage = new HashMap<>();
         wsMessage.put("deviceName", sim.getDeviceName());
         wsMessage.put("phoneNumber", sim.getPhoneNumber());
@@ -234,13 +236,20 @@ public class GsmListenerService {
         StompSession stompSession = remoteStompClientConfig.getSession();
         if (stompSession != null && stompSession.isConnected()) {
             stompSession.send("/topic/receive-otp", wsMessage);
+            log.info("📡 Sent WS /topic/receive-otp: {}", wsMessage);
+        } else {
+            log.warn("⚠️ Không thể gửi WS OTP vì stompSession null hoặc chưa connect");
         }
 
+        // Nếu là buy.otp.service thì chờ push xong mới đóng session
         if (isBuyOtp) {
-            // kết thúc session ngay với buy.otp.service
-            closeSession(sim, s);
+            log.info("⌛ Sẽ đóng session buy.otp.service sau 2s (orderId={})", s.getOrderId());
+            scheduler.schedule(() -> {
+                closeSession(sim, s);
+            }, 2, TimeUnit.SECONDS);
         }
     }
+
 
     // === Process Call === (giữ nguyên logic cũ)
     public void processIncomingCall(Sim sim, String fromNumber, RentSession session) {
