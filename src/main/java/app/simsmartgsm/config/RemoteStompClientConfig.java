@@ -4,9 +4,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.converter.MappingJackson2MessageConverter;
-import org.springframework.messaging.simp.stomp.StompHeaders;
-import org.springframework.messaging.simp.stomp.StompSession;
-import org.springframework.messaging.simp.stomp.StompSessionHandlerAdapter;
+import org.springframework.messaging.simp.stomp.*;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
@@ -40,7 +38,6 @@ public class RemoteStompClientConfig {
 
         log.info("🌐 Connecting to remote WS broker: {}", REMOTE_WS_URL);
 
-        // ✅ Spring 6: dùng connectAsync (không deprecated)
         CompletableFuture<StompSession> futureSession =
                 stompClient.connectAsync(REMOTE_WS_URL, new StompSessionHandlerAdapter() {
                     @Override
@@ -57,7 +54,6 @@ public class RemoteStompClientConfig {
                     }
                 });
 
-        // có thể xử lý thêm nếu cần
         futureSession.exceptionally(ex -> {
             log.error("❌ Failed to connect to {}: {}", REMOTE_WS_URL, ex.getMessage());
             retryConnect();
@@ -77,6 +73,7 @@ public class RemoteStompClientConfig {
         }).start();
     }
 
+    /** ✅ service khác gọi để lấy session */
     public StompSession getSession() {
         return stompSessionRef.get();
     }
